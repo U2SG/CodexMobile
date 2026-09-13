@@ -38,6 +38,7 @@ import { CopyResumeButton } from '../chat/CopyResumeButton.jsx';
 import { formatTime } from '../format-time.js';
 import { compactPath } from '../utils/path.js';
 import { PinnedSection } from './PinnedSection.jsx';
+import { classifyDrawerProjects, projectMatchesQuery } from './project-visibility.js';
 
 function stopThreadAction(event, action) {
   event.preventDefault();
@@ -293,7 +294,7 @@ function projectLabelForResult(cwd, matchedProject) {
   return segments[segments.length - 1] || '';
 }
 
-function SessionSearch({ peers, currentAgent, onSelectSession, projects, selectedProject }) {
+function SessionSearch({ peers, currentAgent, onSelectSession, onSelectProject, projects, selectedProject }) {
   const [query, setQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [results, setResults] = useState([]);
@@ -304,6 +305,13 @@ function SessionSearch({ peers, currentAgent, onSelectSession, projects, selecte
   const [agentFilter, setAgentFilter] = useState('all');
   const [daysFilter, setDaysFilter] = useState(90);
   const [projectScope, setProjectScope] = useState(false);
+  const projectMatches = useMemo(() => {
+    if (!debouncedQuery) return [];
+    const source = projectScope && selectedProject?.id ? [selectedProject] : projects;
+    return (Array.isArray(source) ? source : [])
+      .filter((project) => projectMatchesQuery(project, debouncedQuery))
+      .slice(0, 6);
+  }, [debouncedQuery, projectScope, projects, selectedProject]);
 
   useEffect(() => {
     const handle = setTimeout(() => setDebouncedQuery(query.trim()), 300);
@@ -381,10 +389,10 @@ function SessionSearch({ peers, currentAgent, onSelectSession, projects, selecte
         <Search size={14} aria-hidden="true" />
         <input
           type="search"
-          placeholder="搜索对话内容…"
+          placeholder="搜索项目或对话…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          aria-label="搜索对话"
+          aria-label="搜索项目或对话"
         />
         {query ? (
           <button
@@ -441,7 +449,31 @@ function SessionSearch({ peers, currentAgent, onSelectSession, projects, selecte
         </div>
       ) : null}
       {error ? <div className="drawer-search-error">{error}</div> : null}
-      {!loading && debouncedQuery && results.length === 0 && !error ? (
+      {projectMatches.length > 0 ? (
+        <div className="drawer-search-project-matches">
+          <div className="drawer-search-result-heading">项目</div>
+          <ul className="drawer-search-results">
+            {projectMatches.map((project) => (
+              <li key={`project-${project.id}`}>
+                <button
+                  type="button"
+                  className="drawer-search-main drawer-search-project-main"
+                  onClick={() => onSelectProject?.(project)}
+                  title={project.path || project.name}
+                >
+                  <div className="drawer-search-meta">
+                    <Folder size={13} aria-hidden="true" />
+                    <span className="drawer-search-project" title={project.path || ''}>{project.name}</span>
+                    <small className="drawer-search-project-count">{project.sessionCount || 0} 对话</small>
+                  </div>
+                  <div className="drawer-search-snippet">{compactPath(project.path)}</div>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {!loading && debouncedQuery && results.length === 0 && projectMatches.length === 0 && !error ? (
         <div className="drawer-search-status">没有匹配</div>
       ) : null}
       {results.length > 0 ? (
@@ -501,6 +533,7 @@ export function Drawer({
   sessionsByProject,
   loadingProjectId,
   onToggleProject,
+  onSelectProject,
   onSelectSession,
   onRenameSession,
   onDeleteSession,
@@ -566,6 +599,7 @@ export function Drawer({
   const [quotaSwitchingAvailable, setQuotaSwitchingAvailable] = useState(false);
   const [quotaSwitchingAccountId, setQuotaSwitchingAccountId] = useState('');
   const [showOlderProjects, setShowOlderProjects] = useState(false);
+  const [showOtherProjects, setShowOtherProjects] = useState(false);
   const [archivedExpanded, setArchivedExpanded] = useState(false);
   const [archivedProjects, setArchivedProjects] = useState([]);
   const [archivedLoading, setArchivedLoading] = useState(false);
@@ -601,29 +635,13 @@ export function Drawer({
     }
   }
 
-  const { recentProjects, olderProjects } = useMemo(() => {
-    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    const recent = [];
-    const older = [];
-    for (const project of projects) {
-      const ts = project.updatedAt ? new Date(project.updatedAt).getTime() : 0;
-      if (ts && ts < cutoff) {
-        older.push(project);
-      } else {
-        recent.push(project);
-      }
-    }
-    // The API orders workspace-pinned projects first, then the rest
-    // alphabetically — a just-used project would land near the bottom of this
-    // section. Sort by activity instead; timestamp-less entries (workspace
-    // mounts with no sessions yet) keep their server order at the end.
-    recent.sort((a, b) => {
-      const ta = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
-      const tb = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
-      return tb - ta;
-    });
-    return { recentProjects: recent, olderProjects: older };
-  }, [projects]);
+  const { primaryProjects, olderProjects, otherProjects } = useMemo(() => (
+    classifyDrawerProjects({
+      projects,
+      sessionsByProject,
+      selectedProjectId: selectedProject?.id || ''
+    })
+  ), [projects, sessionsByProject, selectedProject?.id, open]);
 
   async function refreshCodexQuota(event) {
     event?.preventDefault();
@@ -811,6 +829,7 @@ export function Drawer({
           peers={peers}
           currentAgent={agent.id}
           onSelectSession={onSelectSession}
+          onSelectProject={onSelectProject}
           projects={projects}
           selectedProject={selectedProject}
         />
@@ -828,7 +847,7 @@ export function Drawer({
           </button>
           {projectsExpanded ? (
           <div className="project-list">
-            {recentProjects.map((project) => renderProjectGroup({
+            {primaryProjects.map((project) => renderProjectGroup({
               project,
               selectedProject,
               expandedProjectIds,
@@ -860,6 +879,40 @@ export function Drawer({
                   <ChevronDown size={15} className="project-chevron" />
                 </button>
                 {showOlderProjects ? olderProjects.map((project) => renderProjectGroup({
+                  project,
+                  selectedProject,
+                  expandedProjectIds,
+                  sessionsByProject,
+                  loadingProjectId,
+                  selectedSession,
+                  agent,
+                  onToggleProject,
+                  onSelectSession,
+                  onRenameSession,
+                  onDeleteSession,
+                  onArchiveProject,
+                  onTogglePin,
+                  openThreadIds: openDesktopThreadSet
+                })) : null}
+              </>
+            ) : null}
+            {otherProjects.length ? (
+              <>
+                <button
+                  type="button"
+                  className={`project-row older-toggle other-projects-toggle ${showOtherProjects ? 'is-expanded' : ''}`}
+                  onClick={() => setShowOtherProjects((prev) => !prev)}
+                  aria-expanded={showOtherProjects}
+                >
+                  <Folder size={18} />
+                  <span>
+                    <strong>其他项目</strong>
+                    <small>无对话 / 父目录 / 临时目录</small>
+                  </span>
+                  <small className="project-count">{otherProjects.length}</small>
+                  <ChevronDown size={15} className="project-chevron" />
+                </button>
+                {showOtherProjects ? otherProjects.map((project) => renderProjectGroup({
                   project,
                   selectedProject,
                   expandedProjectIds,

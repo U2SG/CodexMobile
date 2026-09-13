@@ -307,6 +307,7 @@ export default function App() {
 
   const {
     loadSessions,
+    handleOpenProject,
     handleToggleProject,
     handleSelectSession,
     handleRenameSession,
@@ -654,6 +655,7 @@ export default function App() {
         sessionsByProject={sessionsByProject}
         loadingProjectId={loadingProjectId}
         onToggleProject={handleToggleProject}
+        onSelectProject={handleOpenProject}
         onSelectSession={handleSelectSession}
         onRenameSession={handleRenameSession}
         onDeleteSession={handleDeleteSession}
