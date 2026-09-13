@@ -5,7 +5,7 @@
 // crash the whole chat view.
 
 import { Component, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { isNearChatBottom, shouldFollowChatOutput } from '../chat-scroll.js';
+import { explicitChatJumpBehavior, isNearChatBottom, shouldFollowChatOutput } from '../chat-scroll.js';
 import { AgentMark } from './AgentMark.jsx';
 import { ChatMessage } from './ChatMessage.jsx';
 import { TurnGroup } from './TurnGroup.jsx';
@@ -75,8 +75,9 @@ function ChatPaneInner({ messages, selectedSession, running, onPreviewImage, onD
     initialScrollDoneRef.current = true;
   }, [selectedSession?.id, messages]);
 
-  // Live updates within the same session: smooth-scroll only when the user is
-  // already pinned to the bottom (don't yank them away if they scrolled up).
+  // Live updates within the same session follow the bottom without restarting
+  // a smooth-scroll animation on every streamed chunk. If the user scrolled up,
+  // preserve their reading position and expose the explicit jump control.
   useEffect(() => {
     if (!initialScrollDoneRef.current) return;
     const follow = shouldFollowChatOutput({
@@ -85,7 +86,10 @@ function ChatPaneInner({ messages, selectedSession, running, onPreviewImage, onD
       force: false
     });
     if (follow) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      const pane = paneRef.current;
+      if (pane) {
+        pane.scrollTop = pane.scrollHeight;
+      }
       setShowJumpButton(false);
     } else if (running || messages.length) {
       setShowJumpButton(true);
@@ -110,7 +114,14 @@ function ChatPaneInner({ messages, selectedSession, running, onPreviewImage, onD
   }, [hasMessages]);
 
   function jumpToLatest() {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    const prefersReducedMotion = Boolean(
+      typeof window !== 'undefined' &&
+      window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches
+    );
+    bottomRef.current?.scrollIntoView({
+      behavior: explicitChatJumpBehavior(prefersReducedMotion),
+      block: 'end'
+    });
     setShowJumpButton(false);
   }
 
