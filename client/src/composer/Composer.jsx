@@ -13,7 +13,7 @@ import {
   ArrowUp,
   BookOpen,
   Check,
-  ChevronDown,
+  ChevronRight,
   FileText,
   Headphones,
   Image,
@@ -23,6 +23,7 @@ import {
   MessageSquarePlus,
   Paperclip,
   Plus,
+  Settings2,
   Square,
   Trash2,
   X
@@ -435,6 +436,10 @@ export function Composer({
     ? models
     : (effectiveModel ? [{ value: effectiveModel, label: effectiveModel }] : []);
   const selectedModelLabel = modelList.find((model) => model.value === effectiveModel)?.label || effectiveModel;
+  const selectedPermissionLabel = isClaudeProvider(status) && permissionMode === 'default'
+    ? '自动接受编辑'
+    : permissionLabel(permissionMode);
+  const runtimeSummary = `${agent.shortLabel} · ${shortModelName(selectedModelLabel)} ${reasoningLabel(selectedReasoningEffort)} · ${selectedPermissionLabel}`;
   const voiceRecording = voiceState === 'recording';
   const voiceTranscribing = voiceState === 'transcribing';
   const voiceSending = voiceState === 'sending';
@@ -683,6 +688,56 @@ export function Composer({
             <BookOpen size={17} />
             <span>{selectedSkills.length ? `技能 ${selectedSkills.length}` : '技能'}</span>
           </button>
+          <div className="menu-divider" />
+          <button type="button" className="composer-menu-detail" onClick={() => setOpenMenu('runtime')}>
+            <Settings2 size={17} />
+            <span>
+              <strong>运行设置</strong>
+              <small>{runtimeSummary}</small>
+            </span>
+            <ChevronRight size={16} />
+          </button>
+          <button
+            type="button"
+            className={`composer-menu-detail ${voiceDialogActive ? 'is-selected' : ''}`}
+            onClick={() => {
+              setOpenMenu(null);
+              onOpenVoiceDialog?.();
+            }}
+          >
+            <Headphones size={17} />
+            <span>
+              <strong>连续语音对话</strong>
+              <small>{voiceDialogActive ? '正在进行' : '实时对话；一次性语音仍用麦克风按钮'}</small>
+            </span>
+          </button>
+        </div>
+      ) : null}
+      {openMenu === 'runtime' ? (
+        <div className="composer-menu runtime-menu">
+          <div className="menu-section-label">运行设置</div>
+          <button type="button" className="composer-menu-detail" onClick={() => setOpenMenu('model')}>
+            <Settings2 size={17} />
+            <span>
+              <strong>模型与推理</strong>
+              <small>{agent.shortLabel} · {shortModelName(selectedModelLabel)} · {reasoningLabel(selectedReasoningEffort)}</small>
+            </span>
+            <ChevronRight size={16} />
+          </button>
+          <button type="button" className="composer-menu-detail" onClick={() => setOpenMenu('permission')}>
+            <Check size={17} />
+            <span>
+              <strong>权限</strong>
+              <small>{selectedPermissionLabel}</small>
+            </span>
+            <ChevronRight size={16} />
+          </button>
+          {selectedSession?.workingDir ? (
+            <div className="runtime-context-row">
+              <span>工作区</span>
+              <strong>{selectedSession.workingBranch || selectedSession.workingDir}</strong>
+            </div>
+          ) : null}
         </div>
       ) : null}
       {openMenu === 'permission' ? (
@@ -870,7 +925,7 @@ export function Composer({
             </div>
             <div className="status-menu-row">
               <span className="status-menu-label">权限</span>
-              <span>{permissionLabel(permissionMode)}</span>
+              <span>{selectedPermissionLabel}</span>
             </div>
             <div className="status-menu-row">
               <span className="status-menu-label">连接</span>
@@ -1114,34 +1169,17 @@ export function Composer({
         />
         <div className="composer-controls">
           <div className="control-left">
-            <button type="button" className="ghost-icon" aria-label="添加" onClick={() => toggleMenu('attach')} disabled={uploading}>
+            <button type="button" className="ghost-icon" aria-label="添加与更多" onClick={() => toggleMenu('attach')} disabled={uploading}>
               <Plus size={21} />
-            </button>
-            <button type="button" className="permission-pill" onClick={() => toggleMenu('permission')}>
-              {isClaudeProvider(status) && permissionMode === 'default' ? '自动接受编辑' : permissionLabel(permissionMode)}
-              <ChevronDown size={15} />
             </button>
           </div>
           <div className="control-right">
-            <button type="button" className="model-select" onClick={() => toggleMenu('model')}>
-              {agent.shortLabel} · {shortModelName(selectedModelLabel)} {reasoningLabel(selectedReasoningEffort)}
-              <ChevronDown size={15} />
-            </button>
-            <button
-              type="button"
-              className={`dialog-button ${voiceDialogActive ? 'is-active' : ''}`}
-              onClick={onOpenVoiceDialog}
-              aria-label="语音对话"
-            >
-              <Headphones size={16} />
-              <span>对话</span>
-            </button>
             <button
               type="button"
               className={`voice-button ${voiceRecording ? 'is-recording' : ''} ${voiceTranscribing ? 'is-transcribing' : ''} ${voiceSending ? 'is-sending' : ''}`}
               onClick={toggleVoiceInput}
               disabled={voiceTranscribing || voiceSending}
-              aria-label={voiceRecording ? '停止语音输入' : voiceSending ? '正在发送语音' : '开始语音输入'}
+              aria-label={voiceRecording ? '停止语音输入' : voiceTranscribing ? '正在转写语音' : voiceSending ? '正在发送语音' : '语音输入：录音转文字并发送'}
             >
               {voiceTranscribing || voiceSending ? <Loader2 className="spin" size={16} /> : <Mic size={17} />}
             </button>
