@@ -162,16 +162,14 @@ test('window online event forces a reconnect when current socket is not OPEN', a
   expect(constructed.length).toBeGreaterThanOrEqual(2);
 });
 
-test('visibilitychange probes an OPEN socket and reconciles status from the ack', async () => {
+test('visibilitychange probes an OPEN socket and reconciles active runs from the ack', async () => {
   vi.useFakeTimers();
-  const statuses = [];
   const synced = [];
   const connectionStates = [];
   await act(async () => {
     root.render(
       <HookHost
         authenticated
-        onSetStatus={(value) => statuses.push(value)}
         onSyncActiveRuns={(value) => synced.push(value)}
         onSetConnectionState={(value) => connectionStates.push(value)}
       />
@@ -195,18 +193,14 @@ test('visibilitychange probes an OPEN socket and reconciles status from the ack'
   expect(probe.type).toBe('liveness-probe');
   expect(typeof probe.id).toBe('string');
 
-  const status = {
-    connected: true,
-    activeRuns: [{ turnId: 'turn-live', sessionId: 'session-live' }]
-  };
+  const activeRuns = [{ turnId: 'turn-live', sessionId: 'session-live' }];
   await act(async () => {
     ws.onmessage?.({
-      data: JSON.stringify({ type: 'liveness-ack', id: probe.id, status })
+      data: JSON.stringify({ type: 'liveness-ack', id: probe.id, activeRuns })
     });
   });
 
-  expect(statuses.at(-1)).toEqual(status);
-  expect(synced.at(-1)).toEqual(status);
+  expect(synced.at(-1)).toEqual({ connected: true, activeRuns });
   expect(connectionStates.at(-1)).toBe('connected');
 
   await act(async () => {

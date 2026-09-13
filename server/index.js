@@ -599,6 +599,15 @@ async function getClientBuildId() {
   return clientBuildIdCache.value;
 }
 
+function activeRunsSnapshot() {
+  return [
+    ...getCodexActiveRuns(),
+    ...desktopTurnMonitor.getActiveRuns(),
+    ...(chatService?.getActiveDesktopIpcRuns?.() || []),
+    ...getActiveImageRuns()
+  ];
+}
+
 async function publicStatus(authenticated) {
   const snapshot = getCacheSnapshot();
   const config = snapshot.config || {};
@@ -619,12 +628,7 @@ async function publicStatus(authenticated) {
     voiceRealtime: publicVoiceRealtimeStatus(config),
     docs: await publicDocsStatus(authenticated),
     syncedAt: snapshot.syncedAt,
-    activeRuns: [
-      ...getCodexActiveRuns(),
-      ...desktopTurnMonitor.getActiveRuns(),
-      ...(chatService?.getActiveDesktopIpcRuns?.() || []),
-      ...getActiveImageRuns()
-    ],
+    activeRuns: activeRunsSnapshot(),
     auth: {
       required: true,
       authenticated,
@@ -815,7 +819,7 @@ async function main() {
             ws.send(JSON.stringify({
               type: 'liveness-ack',
               id: frame.id,
-              status: await publicStatus(true)
+              activeRuns: activeRunsSnapshot()
             }));
           } catch {
             // A dead socket will be removed by close/heartbeat handling.

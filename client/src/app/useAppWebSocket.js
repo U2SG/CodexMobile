@@ -191,10 +191,12 @@ export function useAppWebSocket({
         if (payload.type === 'liveness-ack') {
           if (livenessProbe && payload.id === livenessProbe.id) {
             clearLivenessProbe();
-            const nextStatus = payload.status || defaultStatus;
-            setStatus(nextStatus);
-            setConnectionState(nextStatus.connected ? 'connected' : 'disconnected');
-            syncActiveRunsFromStatus(nextStatus);
+            const livenessStatus = {
+              connected: true,
+              activeRuns: Array.isArray(payload.activeRuns) ? payload.activeRuns : []
+            };
+            setConnectionState('connected');
+            syncActiveRunsFromStatus(livenessStatus);
           }
           return;
         }
