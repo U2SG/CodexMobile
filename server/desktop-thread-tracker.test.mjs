@@ -121,23 +121,45 @@ test('tracker reconnects after socket drop and rebuilds set', async () => {
   }
 });
 
-test('tracker stop() prevents further reconnects', async () => {
-  let connectCount = 0;
+test('tracker stop() prevents any later connected state', async () => {
+  const events = [];
   const { server, sockPath } = await makeIpcServer({
     onConnect: (sock) => {
-      connectCount += 1;
       setTimeout(() => sock.destroy(), 10);
     },
     onMessage: (msg) => msg.method === 'initialize' ? initResponseFor(msg) : null
   });
   activeServer = server;
   const tracker = createDesktopThreadTracker({ socketPath: sockPath, reconnectMs: 30 });
+  tracker.onConnectionChange((state) => events.push(state.connected));
   await tracker.start();
   await new Promise((resolve) => setTimeout(resolve, 100));
   await tracker.stop();
-  const countAtStop = connectCount;
+  const connectedCountAtStop = events.filter(Boolean).length;
   await new Promise((resolve) => setTimeout(resolve, 150));
-  assert.equal(connectCount, countAtStop, 'should not reconnect after stop');
+  assert.equal(events.filter(Boolean).length, connectedCountAtStop, 'should not publish connected after stop');
+});
+
+test('tracker stop() cancels an in-flight initialize before admission', async () => {
+  const events = [];
+  const { server, sockPath } = await makeIpcServer({
+    onMessage: (msg, sock) => {
+      if (msg.method !== 'initialize') return null;
+      setTimeout(() => {
+        if (!sock.destroyed) sock.write(encodeFrame(initResponseFor(msg)));
+      }, 120);
+      return null;
+    }
+  });
+  activeServer = server;
+  const tracker = createDesktopThreadTracker({ socketPath: sockPath, reconnectMs: 30 });
+  tracker.onConnectionChange((state) => events.push(state.connected));
+  const startPromise = tracker.start();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await tracker.stop();
+  await startPromise;
+  await new Promise((resolve) => setTimeout(resolve, 160));
+  assert.equal(events.includes(true), false, 'in-flight connection must never publish connected after stop');
 });
 
 test('tracker handles bad socket path with backoff retry', async () => {
