@@ -14,6 +14,13 @@ import { createChatImageHandler } from './chat-image-handler.js';
 import { normalizeComparablePath } from './codex-data.js';
 import { createChatAutoNamer } from './chat-auto-title.js';
 import { createDesktopTurnMonitor } from './desktop-turn-monitor.js';
+import {
+  createTurnLatencyTrace,
+  isTerminalTurnEvent,
+  markTurnLatency,
+  observeTurnLatencyEvent,
+  turnLatencyDurations
+} from './turn-latency.js';
 
 export { normalizeSelectedSkills } from './chat-request-prep.js';
 
@@ -118,8 +125,21 @@ export function createChatService({
   }
 
   function emitJobEvent(job, payload) {
-    const enriched = { projectId: job.project.id, ...payload };
+    const latency = job.latencyTrace
+      ? observeTurnLatencyEvent(job.latencyTrace, payload)
+      : null;
+    const enriched = {
+      projectId: job.project.id,
+      ...payload,
+      ...(latency ? { latency } : {})
+    };
     rememberTurnEvent(enriched);
+    if (latency) {
+      rememberTurn(job.turnId, { latency });
+    }
+    if (latency && isTerminalTurnEvent(payload)) {
+      console.info('[turn-latency-server]', { turnId: job.turnId, ...latency });
+    }
     broadcast(enriched);
   }
 
@@ -195,12 +215,17 @@ export function createChatService({
 
   function enqueueChatJob(job, { forceQueued = false, autoStart = true } = {}) {
     const { queued, state } = chatQueue.enqueueJob(job, { forceQueued });
+    if (queued && job.latencyTrace) {
+      markTurnLatency(job.latencyTrace, 'queued');
+    }
+    const latency = job.latencyTrace ? turnLatencyDurations(job.latencyTrace) : null;
     if (queued) {
       const sessionId = state.sessionId || job.selectedSessionId || job.draftSessionId;
       rememberTurn(job.turnId, {
         status: 'queued',
         label: '已加入队列',
-        sessionId: sessionId || null
+        sessionId: sessionId || null,
+        ...(latency ? { latency } : {})
       });
       broadcast({
         type: 'status-update',
@@ -231,6 +256,10 @@ export function createChatService({
     if (!job) return;
 
     state.running = true;
+    if (job.latencyTrace) {
+      markTurnLatency(job.latencyTrace, 'runnerStarted');
+      rememberTurn(job.turnId, { latency: turnLatencyDurations(job.latencyTrace) });
+    }
     broadcastQueueUpdated({
       queueKey,
       state,
@@ -259,6 +288,7 @@ export function createChatService({
   }
 
   async function sendChat(body, { remoteAddress = '' } = {}) {
+    const requestReceivedAtMs = Date.now();
     const attachmentCount = Array.isArray(body.attachments) ? body.attachments.length : 0;
     console.log(`[chat] send request remote=${remoteAddress} project=${body.projectId || ''} session=${body.sessionId || body.draftSessionId || ''} attachments=${attachmentCount}`);
     const project = getProject(body.projectId);
@@ -287,6 +317,13 @@ export function createChatService({
       visibleMessage,
       codexMessage
     } = prepared;
+    const latencyTrace = createTurnLatencyTrace(requestReceivedAtMs);
+    const markAccepted = () => {
+      markTurnLatency(latencyTrace, 'accepted');
+      const latency = turnLatencyDurations(latencyTrace);
+      rememberTurn(turnId, { latency });
+      return latency;
+    };
     let selectedSessionId = prepared.selectedSessionId;
     let conversationSessionId = prepared.conversationSessionId;
     let bridge = await assertDesktopBridgeAvailable(getDesktopBridgeStatus);
@@ -342,6 +379,7 @@ export function createChatService({
       !imagePrompt &&
       (sendMode === 'queue' || sendMode === 'start');
     if (shouldHoldInLocalQueue) {
+      markAccepted();
       const queued = enqueueChatJob({
         queueKey,
         project,
@@ -358,7 +396,8 @@ export function createChatService({
         model: modelForTurn,
         reasoningEffort: reasoningEffortForTurn,
         permissionMode: body.permissionMode || 'bypassPermissions',
-        collaborationMode
+        collaborationMode,
+        latencyTrace
       }, { forceQueued: true, autoStart: false });
       return {
         accepted: true,
@@ -367,6 +406,7 @@ export function createChatService({
         draftSessionId,
         turnId,
         delivery: 'queued',
+        latency: turnLatencyDurations(latencyTrace),
         desktopBridge: bridge
       };
     }
@@ -401,6 +441,10 @@ export function createChatService({
             interruptDesktopFollowerTurn,
             desktopOwnerRetryDelays
           });
+          markAccepted();
+          markTurnLatency(latencyTrace, 'runnerStarted');
+          const latency = turnLatencyDurations(latencyTrace);
+          rememberTurn(turnId, { latency });
           desktopTurnMonitor.startRun({
             projectId: project.id,
             sessionId: result.sessionId,
@@ -411,7 +455,7 @@ export function createChatService({
             userMessage: visibleMessage,
             startedAt: new Date().toISOString()
           });
-          return result;
+          return { ...result, latency };
         } catch (error) {
           const canFallBackToBackground =
             error?.code === 'CODEXMOBILE_DESKTOP_THREAD_OWNER_UNAVAILABLE' &&
@@ -449,13 +493,17 @@ export function createChatService({
         attachments,
         selectedSkills
       });
+      markAccepted();
+      markTurnLatency(latencyTrace, 'runnerStarted');
+      const latency = turnLatencyDurations(latencyTrace);
       rememberTurn(turnId, {
         projectId: project.id,
         projectPath: project.path,
         sessionId: result.sessionId || selectedSessionId,
         previousSessionId: selectedSessionId,
         status: 'running',
-        label: '已发送到当前任务'
+        label: '已发送到当前任务',
+        latency
       });
       broadcast({
         type: 'user-message',
@@ -487,10 +535,12 @@ export function createChatService({
         draftSessionId,
         turnId: result.turnId || turnId,
         clientTurnId: turnId,
+        latency,
         desktopBridge: bridge
       };
     }
 
+    markAccepted();
     rememberTurn(turnId, {
       projectId: project.id,
       projectPath: project.path,
@@ -500,7 +550,8 @@ export function createChatService({
       status: 'accepted',
       label: '正在思考',
       hadAssistantText: false,
-      startedAt: new Date().toISOString()
+      startedAt: new Date().toISOString(),
+      latency: turnLatencyDurations(latencyTrace)
     });
     broadcast({
       type: 'user-message',
@@ -547,7 +598,8 @@ export function createChatService({
       model: modelForTurn,
       reasoningEffort: reasoningEffortForTurn,
       permissionMode: body.permissionMode || 'bypassPermissions',
-      collaborationMode
+      collaborationMode,
+      latencyTrace
     });
 
     return {
@@ -557,6 +609,7 @@ export function createChatService({
       draftSessionId,
       turnId,
       delivery: sendMode === 'interrupt' ? 'interrupted-started' : (queued ? 'queued' : 'started'),
+      latency: turnLatencyDurations(latencyTrace),
       desktopBridge: bridge
     };
   }

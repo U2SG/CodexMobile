@@ -15,6 +15,7 @@ import { useEffect } from 'react';
 import { apiFetch, getToken, websocketUrl } from '../api.js';
 import { sameUserMessageContent } from '../chat/message-identity.js';
 import { createAssistantStreamBuffer } from '../chat/assistant-stream-buffer.js';
+import { finishClientTurnLatency, markClientTurnLatency } from '../turn-latency.js';
 import { createBackoff } from './ws-backoff.js';
 import { sessionMessagesPath } from './session-utils.js';
 
@@ -188,6 +189,9 @@ export function useAppWebSocket({
       ws.onmessage = (event) => {
         lastFrameAt = Date.now();
         const payload = JSON.parse(event.data);
+        if (payload.turnId) {
+          markClientTurnLatency(payload.turnId, 'firstWsEvent');
+        }
         if (payload.type === 'liveness-ack') {
           if (livenessProbe && payload.id === livenessProbe.id) {
             clearLivenessProbe();
@@ -314,6 +318,7 @@ export function useAppWebSocket({
           if (!payload.content?.trim()) {
             return;
           }
+          markClientTurnLatency(payload.turnId, 'firstAssistantFrame');
           markRun(payload);
           streamBuffer.schedule(payload, applyAssistantUpdate);
           return;
@@ -343,6 +348,10 @@ export function useAppWebSocket({
           return;
         }
         if (payload.type === 'chat-complete' || payload.type === 'chat-error' || payload.type === 'chat-aborted') {
+          finishClientTurnLatency(
+            payload.turnId,
+            payload.type === 'chat-complete' ? 'completed' : payload.type === 'chat-aborted' ? 'aborted' : 'failed'
+          );
           // Drop any unanswered approvals for this turn — the server already
           // moved on, so the prompt is stale.
           dropApprovalRequest?.({ turnId: payload.turnId });
