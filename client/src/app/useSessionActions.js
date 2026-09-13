@@ -96,6 +96,20 @@ export function useSessionActions({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  async function handleOpenProject(project) {
+    if (!project?.id) return;
+    setExpandedProjectIds((current) => ({ ...current, [project.id]: true }));
+    const projectChanged = selectedProject?.id !== project.id;
+    setSelectedProject(project);
+    if (projectChanged) {
+      setSelectedSession(null);
+      setMessages([]);
+    }
+    if (!sessionsByProject[project.id]?.length) {
+      await loadSessions(project, false);
+    }
+  }
+
   async function handleToggleProject(project) {
     const isExpanded = Boolean(expandedProjectIds[project.id]);
     if (isExpanded) {
@@ -107,16 +121,7 @@ export function useSessionActions({
       return;
     }
 
-    setExpandedProjectIds((current) => ({ ...current, [project.id]: true }));
-    const projectChanged = selectedProject?.id !== project.id;
-    setSelectedProject(project);
-    if (projectChanged) {
-      setSelectedSession(null);
-      setMessages([]);
-    }
-    if (!sessionsByProject[project.id]?.length) {
-      await loadSessions(project, false);
-    }
+    await handleOpenProject(project);
   }
 
   async function handleSelectSession(session, project = null) {
@@ -326,6 +331,7 @@ export function useSessionActions({
 
   return {
     loadSessions,
+    handleOpenProject,
     handleToggleProject,
     handleSelectSession,
     handleRenameSession,
