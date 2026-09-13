@@ -15,12 +15,12 @@ export function defaultProvider() {
 }
 
 export function defaultModel() {
-  // Bare alias, not a pinned `claude-sonnet-5`: this value round-trips through
-  // the client back into resolveClaudeModel, so an alias keeps following the
-  // latest of the family instead of freezing on one release.
+  // Bare alias, not a pinned `claude-sonnet-*` id: this value round-trips
+  // through the client back into resolveClaudeModel, so the CLI keeps following
+  // the latest release in that family.
   return isClaudeMode() ? 'sonnet' : 'gpt-5.5';
 }
 
 export function defaultModelShort() {
-  return isClaudeMode() ? 'Sonnet 5' : '5.5 中';
+  return isClaudeMode() ? 'Sonnet' : '5.5 中';
 }
