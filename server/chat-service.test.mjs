@@ -478,3 +478,43 @@ test('sendChat reports a desktop-held thread instead of a doomed background writ
     }
   );
 });
+
+
+test('sendChat records duration-only latency milestones without message content', async () => {
+  const secretText = 'latency-secret-message';
+  const { service } = makeChatService({
+    runCodexTurn: async (payload, emit) => {
+      emit({ type: 'chat-started', sessionId: 'latency-thread', turnId: payload.turnId, startedAt: new Date().toISOString() });
+      emit({ type: 'assistant-update', sessionId: 'latency-thread', turnId: payload.turnId, messageId: 'assistant-1', content: 'first reply', done: false });
+      emit({ type: 'chat-complete', sessionId: 'latency-thread', turnId: payload.turnId, completedAt: new Date().toISOString(), hadAssistantText: true });
+      return 'latency-thread';
+    }
+  });
+
+  const result = await service.sendChat({
+    projectId: 'project-1',
+    draftSessionId: 'draft-project-1-latency',
+    clientTurnId: 'latency-turn',
+    message: secretText
+  });
+  await flushQueuedWork();
+
+  const latency = service.getTurn('latency-turn')?.latency;
+  assert.equal(result.accepted, true);
+  assert.equal(typeof result.latency?.requestToAcceptedMs, 'number');
+  assert.equal(typeof latency?.requestToAcceptedMs, 'number');
+  assert.equal(typeof latency?.acceptedToRunnerMs, 'number');
+  assert.equal(typeof latency?.runnerToFirstEventMs, 'number');
+  assert.equal(typeof latency?.runnerToFirstAssistantMs, 'number');
+  assert.equal(typeof latency?.totalServerMs, 'number');
+  assert.equal(JSON.stringify(latency).includes(secretText), false);
+  assert.deepEqual(Object.keys(latency).sort(), [
+    'acceptedToRunnerMs',
+    'firstEventToFirstAssistantMs',
+    'queueWaitMs',
+    'requestToAcceptedMs',
+    'runnerToFirstAssistantMs',
+    'runnerToFirstEventMs',
+    'totalServerMs'
+  ]);
+});

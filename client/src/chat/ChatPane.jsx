@@ -6,6 +6,7 @@
 
 import { Component, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { explicitChatJumpBehavior, isNearChatBottom, shouldFollowChatOutput } from '../chat-scroll.js';
+import { markClientTurnLatency } from '../turn-latency.js';
 import { AgentMark } from './AgentMark.jsx';
 import { ChatMessage } from './ChatMessage.jsx';
 import { TurnGroup } from './TurnGroup.jsx';
@@ -74,6 +75,17 @@ function ChatPaneInner({ messages, selectedSession, running, onPreviewImage, onD
     pane.scrollTop = pane.scrollHeight;
     initialScrollDoneRef.current = true;
   }, [selectedSession?.id, messages]);
+
+  // Runs after React commits the updated chat DOM. This is closer to the user's
+  // perceived first-text time than the WebSocket receive timestamp itself.
+  useEffect(() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message?.role !== 'assistant' || !message?.turnId || !String(message.content || '').trim()) continue;
+      markClientTurnLatency(message.turnId, 'firstTextApplied');
+      break;
+    }
+  }, [messages]);
 
   // Live updates within the same session follow the bottom without restarting
   // a smooth-scroll animation on every streamed chunk. If the user scrolled up,

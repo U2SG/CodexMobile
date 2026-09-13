@@ -46,6 +46,12 @@ import {
 } from '../chat/activity-model.js';
 import { selectedSkillsAsBodyEntries } from '../skills/skill-selection.js';
 import {
+  aliasClientTurnLatency,
+  beginClientTurnLatency,
+  finishClientTurnLatency,
+  markClientTurnLatency
+} from '../turn-latency.js';
+import {
   createClientTurnId,
   createDraftSession,
   isDraftSession,
@@ -146,6 +152,7 @@ export function useTurnSubmission({
     }
 
     const turnId = createClientTurnId();
+    beginClientTurnLatency(turnId);
     const draftSessionId = isDraftSession(sessionForTurn) ? sessionForTurn.id : null;
     const outgoingSessionId = draftSessionId ? null : sessionForTurn?.id || null;
     const optimisticSessionId = draftSessionId || outgoingSessionId || turnId;
@@ -222,7 +229,10 @@ export function useTurnSubmission({
           selectedSkills: selectedSkillsAsBodyEntries(selectedSkills)
         }
       });
+      markClientTurnLatency(turnId, 'sendResponse');
+      aliasClientTurnLatency(turnId, result.turnId || turnId);
       if (result.requiresConfirmation && result.confirmationType === 'image-intent') {
+        finishClientTurnLatency(turnId, 'confirmation');
         const failKey = { turnId, sessionId: optimisticSessionId, previousSessionId: draftSessionId || outgoingSessionId };
         clearRun(failKey);
         setMessages((current) => current.filter((message) => message.turnId !== turnId));
@@ -260,6 +270,7 @@ export function useTurnSubmission({
         previousSessionId: draftSessionId || outgoingSessionId
       };
     } catch (error) {
+      finishClientTurnLatency(turnId, 'send-error');
       const failKey = { turnId, sessionId: optimisticSessionId, previousSessionId: draftSessionId || outgoingSessionId };
       clearRun(failKey);
       if (clearComposer) {
