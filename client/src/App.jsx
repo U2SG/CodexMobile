@@ -424,6 +424,7 @@ export default function App() {
   } = useConnectionActions({
     connectionState,
     desktopBridge,
+    provider: status?.provider,
     loadStatus,
     setConnectionState,
     setAuthenticated
@@ -622,12 +623,14 @@ export default function App() {
     <div className={shellClass}>
       <TopBar
         selectedProject={selectedProject}
+        selectedSession={selectedSession}
         connectionState={connectionState}
         status={status}
         desktopBridge={desktopBridge}
         peers={peers}
         onMenu={() => setDrawerOpen(true)}
         onOpenDocs={() => setDocsOpen(true)}
+        onShowConnectionStatus={handleShowConnectionStatus}
       />
       <ConnectionRecoveryCard
         state={recoveryState}
@@ -667,6 +670,7 @@ export default function App() {
         onOpenGit={() => { setGitOpen(true); setDrawerOpen(false); }}
         onOpenNotifications={() => { setNotificationsOpen(true); setDrawerOpen(false); }}
         onOpenActivity={() => { setActivityOpen(true); setDrawerOpen(false); }}
+        onShowConnectionStatus={handleShowConnectionStatus}
         peers={peers}
         syncing={syncing}
         theme={theme}

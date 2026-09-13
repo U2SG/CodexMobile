@@ -40,3 +40,12 @@ test('formatConnectionStatusMessage uses the raw state when not in CONNECTION_ST
   });
   assert.equal(message, '连接：mystery\n桌面：ok');
 });
+
+test('formatConnectionStatusMessage hides Codex desktop diagnostics in Claude mode', () => {
+  const message = formatConnectionStatusMessage({
+    connectionState: 'connected',
+    provider: 'claude',
+    desktopBridge: { reason: 'Codex IPC pipe missing', mode: 'desktop-ipc' }
+  });
+  assert.equal(message, `连接：${CONNECTION_STATUS.connected.label}`);
+});

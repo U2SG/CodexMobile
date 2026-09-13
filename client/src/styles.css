@@ -228,7 +228,7 @@ button {
 }
 
 .top-bar.is-claude .top-title strong {
-  color: var(--claude);
+  color: var(--text);
 }
 
 [data-theme="dark"] .top-bar.is-claude .top-title strong {
@@ -5533,29 +5533,45 @@ button {
   font-size: var(--fs-body);
   line-height: 20px;
   letter-spacing: 0;
-  text-align: center;
+  text-align: left;
 }
 
 .top-meta {
-  flex-wrap: nowrap;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
   width: 100%;
   gap: 7px;
   overflow: hidden;
 }
 
+.top-meta.is-status-only {
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: center;
+}
+
 .connection-status,
-.top-project-path {
+.top-project-context {
   font-size: var(--fs-sm);
   line-height: 15px;
 }
 
-.connection-status {
-  flex: 0 0 auto;
+.top-project-context {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.top-project-path {
-  flex: 1 1 auto;
-  max-width: none;
+.connection-status {
+  min-width: 0;
+}
+
+.top-meta.is-status-only .connection-status,
+.top-meta.is-status-only .peer-switcher {
+  justify-self: center;
 }
 
 .chat-pane {
@@ -6310,7 +6326,7 @@ button {
 }
 
 .top-title strong,
-.top-project-path,
+.top-project-context,
 .project-row strong,
 .project-row small,
 .thread-row span,
@@ -6438,7 +6454,7 @@ button {
   }
 
   .connection-status,
-  .top-project-path {
+  .top-project-context {
     font-size: var(--fs-caption);
     line-height: 15px;
   }

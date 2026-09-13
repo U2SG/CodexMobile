@@ -18,6 +18,7 @@
 //   { handleRetryConnection, handleResetPairing, handleShowConnectionStatus }
 
 import { clearToken } from '../api.js';
+import { isClaudeProvider } from '../agent-meta.js';
 
 export const CONNECTION_STATUS = {
   connected: { label: '已连接', className: 'is-connected' },
@@ -28,17 +29,21 @@ export const CONNECTION_STATUS = {
 // Pure helper: the alert body for "show connection status". Exported so the
 // fallback chain (label dict → raw state, reason → mode → default) can be
 // tested without invoking window.alert.
-export function formatConnectionStatusMessage({ connectionState, desktopBridge }) {
-  const desktopDetail =
-    desktopBridge?.reason || desktopBridge?.mode || '桌面桥接状态未返回详情。';
+export function formatConnectionStatusMessage({ connectionState, desktopBridge, provider = '' }) {
   const connectionLabel =
     CONNECTION_STATUS[connectionState]?.label || connectionState;
+  if (isClaudeProvider(provider)) {
+    return `连接：${connectionLabel}`;
+  }
+  const desktopDetail =
+    desktopBridge?.reason || desktopBridge?.mode || '桌面桥接状态未返回详情。';
   return `连接：${connectionLabel}\n桌面：${desktopDetail}`;
 }
 
 export function useConnectionActions({
   connectionState,
   desktopBridge,
+  provider = '',
   loadStatus,
   setConnectionState,
   setAuthenticated
@@ -60,7 +65,7 @@ export function useConnectionActions({
   }
 
   function handleShowConnectionStatus() {
-    window.alert(formatConnectionStatusMessage({ connectionState, desktopBridge }));
+    window.alert(formatConnectionStatusMessage({ connectionState, desktopBridge, provider }));
   }
 
   return { handleRetryConnection, handleResetPairing, handleShowConnectionStatus };
