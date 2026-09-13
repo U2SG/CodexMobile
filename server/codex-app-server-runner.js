@@ -285,6 +285,26 @@ function buildUserInput(message, attachments = []) {
   return parts;
 }
 
+function codexAbortError() {
+  return Object.assign(new Error('Codex turn aborted'), { name: 'AbortError' });
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) {
+    throw codexAbortError();
+  }
+}
+
+function waitForAbort(signal) {
+  return new Promise((_, reject) => {
+    if (signal?.aborted) {
+      reject(codexAbortError());
+      return;
+    }
+    signal?.addEventListener('abort', () => reject(codexAbortError()), { once: true });
+  });
+}
+
 // Re-export the pool resolver under the historical name so existing callers
 // (server/index.js WS handler, tests) keep working. New code should import
 // resolveApproval directly from approval-pool.js.
@@ -296,7 +316,9 @@ export function listPendingApprovals(filterTurnId = null) {
   return poolListPendingApprovals(filterTurnId);
 }
 
-export async function runCodexTurnViaAppServer(args, emit) {
+export async function runCodexTurnViaAppServer(args, emit, {
+  createClient = (options) => new CodexAppServerClient(options)
+} = {}) {
   const {
     sessionId,
     draftSessionId,
@@ -319,6 +341,8 @@ export async function runCodexTurnViaAppServer(args, emit) {
   let currentSessionId = sessionId || null;
   let previousSessionId = draftSessionId || sessionId || null;
   let appServerThreadId = sessionId || null;
+  let turnStartRequested = false;
+  let runtimeTurnId = null;
   let turnCompletedResolver;
   let turnCompletedRejecter;
   const turnCompleted = new Promise((resolve, reject) => {
@@ -330,6 +354,7 @@ export async function runCodexTurnViaAppServer(args, emit) {
     process: null,
     abortController,
     turnId,
+    runtimeTurnId: null,
     sessionId: currentSessionId,
     previousSessionId,
     startedAt: new Date().toISOString(),
@@ -337,7 +362,7 @@ export async function runCodexTurnViaAppServer(args, emit) {
   };
   activeRuns.set(turnId, run);
 
-  const client = new CodexAppServerClient({
+  const client = createClient({
     cwd: projectPath || process.cwd(),
     env: process.env,
     clientInfo: { name: 'CodexMobile', version: '0.1.0' },
@@ -347,6 +372,13 @@ export async function runCodexTurnViaAppServer(args, emit) {
   });
 
   function handleNotification(msg) {
+    if (msg.method === 'turn/started' && turnStartRequested) {
+      const id = msg.params?.turn?.id;
+      if (id) {
+        runtimeTurnId = id;
+        run.runtimeTurnId = id;
+      }
+    }
     // Surface turn completion to the await below.
     if (msg.method === 'turn/completed') {
       state.usage = msg.params?.turn?.tokenUsage || msg.params?.turn?.usage || null;
@@ -408,6 +440,7 @@ export async function runCodexTurnViaAppServer(args, emit) {
 
   try {
     await client.initialize();
+    throwIfAborted(abortController.signal);
 
     if (appServerThreadId) {
       await client.request('thread/resume', {
@@ -420,6 +453,7 @@ export async function runCodexTurnViaAppServer(args, emit) {
       }, { timeoutMs: 30_000 });
       currentSessionId = appServerThreadId;
       run.sessionId = appServerThreadId;
+      throwIfAborted(abortController.signal);
     } else {
       const startResp = await client.request('thread/start', {
         cwd: projectPath || null,
@@ -432,6 +466,7 @@ export async function runCodexTurnViaAppServer(args, emit) {
         currentSessionId = newId;
         run.sessionId = newId;
       }
+      throwIfAborted(abortController.signal);
     }
 
     emit({
@@ -445,7 +480,9 @@ export async function runCodexTurnViaAppServer(args, emit) {
 
     const input = buildUserInput(message, attachments);
     const effort = normalizeReasoningEffort(reasoningEffort);
-    await client.request('turn/start', {
+    throwIfAborted(abortController.signal);
+    turnStartRequested = true;
+    const turnStartResponse = await client.request('turn/start', {
       threadId: currentSessionId,
       input,
       model: model || null,
@@ -456,17 +493,19 @@ export async function runCodexTurnViaAppServer(args, emit) {
       // from the v1 SandboxMode that we currently track. Revisit when adding
       // workspace-write writable-roots support.
     }, { timeoutMs: 30_000 });
+    const responseTurnId = turnStartResponse?.turn?.id;
+    if (responseTurnId) {
+      runtimeTurnId = responseTurnId;
+      run.runtimeTurnId = responseTurnId;
+    }
+    throwIfAborted(abortController.signal);
 
-    // turn/start returns immediately after the model starts; the stream of
-    // notifications drives the rest of the turn. Wait for turn/completed (or
-    // an error notification) to resolve.
+    // turn/start returns after admission; the stream of notifications drives
+    // the rest of the turn. Wait for turn/completed (or an abort/error) without
+    // missing an abort that happened before this listener was installed.
     const completion = await Promise.race([
       turnCompleted,
-      new Promise((_, reject) => {
-        abortController.signal.addEventListener('abort', () => {
-          reject(Object.assign(new Error('Codex turn aborted'), { name: 'AbortError' }));
-        }, { once: true });
-      })
+      waitForAbort(abortController.signal)
     ]);
 
     if (!state.failed) {
@@ -496,12 +535,13 @@ export async function runCodexTurnViaAppServer(args, emit) {
     if (!wasAborted) {
       console.error('[codex-app-server] Chat error:', userError);
     }
-    // Try to interrupt the running turn on the app-server side.
-    if (wasAborted && currentSessionId) {
+    // Try to interrupt only the exact runtime turn that app-server admitted.
+    // The client request id is intentionally different and is not valid here.
+    if (wasAborted && currentSessionId && runtimeTurnId) {
       try {
         await client.request('turn/interrupt', {
           threadId: currentSessionId,
-          turnId
+          turnId: runtimeTurnId
         }, { timeoutMs: 5000 });
       } catch (interruptError) {
         // Best-effort: the server may already have given up.
