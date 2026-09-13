@@ -1,0 +1,477 @@
+import crypto from 'node:crypto';
+import fsSync from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {
+  isoFromEpochSeconds,
+  publicContextState,
+  publicRuntimeState
+} from './session-message-reader.js';
+
+export const PROJECTLESS_PROJECT_ID = '__codexmobile_projectless__';
+export const PROJECTLESS_PROJECT_NAME = '普通对话';
+
+const INTERNAL_PROMPT_MARKERS = [
+  'CodexMobile iOS/PWA 回复要求：',
+  'CodexMobile 已接入飞书官方 lark-cli。',
+  'CodexMobile 已接入飞书官方 lark-cli'
+];
+
+export function normalizeComparablePath(value) {
+  if (!value || typeof value !== 'string') {
+    return '';
+  }
+  const normalized = path.resolve(value);
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+export function projectIdFor(projectPath) {
+  return crypto.createHash('sha1').update(normalizeComparablePath(projectPath)).digest('hex').slice(0, 16);
+}
+
+function resolvedHomeDir(homeDir) {
+  return typeof homeDir === 'function' ? homeDir() : homeDir || os.homedir();
+}
+
+function documentsCodexRoot(homeDir) {
+  return path.join(resolvedHomeDir(homeDir), 'Documents', 'Codex');
+}
+
+function pathSegmentsUnder(parent, child) {
+  const relative = path.relative(path.resolve(parent), path.resolve(child));
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+    return [];
+  }
+  return relative.split(path.sep).filter(Boolean);
+}
+
+function isDocumentsCodexConversationPath(projectPath, homeDir) {
+  const segments = pathSegmentsUnder(documentsCodexRoot(homeDir), projectPath);
+  return segments.length >= 2 && /^\d{4}-\d{2}-\d{2}$/.test(segments[0]);
+}
+
+function displayNameFor(projectPath) {
+  const parsed = path.parse(projectPath);
+  return path.basename(projectPath) || parsed.root || projectPath;
+}
+
+function sanitizeVisibleUserMessage(message) {
+  const value = String(message || '').trim();
+  if (!value) {
+    return '';
+  }
+  let cutAt = value.length;
+  for (const marker of INTERNAL_PROMPT_MARKERS) {
+    const index = value.indexOf(marker);
+    if (index > 0) {
+      cutAt = Math.min(cutAt, index);
+    }
+  }
+  return value.slice(0, cutAt).trim() || value;
+}
+
+function isArchivedOrDeletedDesktopThread(thread = null) {
+  if (!thread || typeof thread !== 'object') {
+    return true;
+  }
+  const status = String(thread.status || '').toLowerCase();
+  const archivedAt = String(thread.archivedAt || thread.deletedAt || thread.archiveAt || thread.archived_at || thread.deleted_at || '').trim();
+  const deletedAt = String(thread.deletedAt || thread.deleted_at || '').trim();
+  const flaggedDeleted = Boolean(thread.deleted) || Boolean(thread.isDeleted) || status === 'deleted' || status === 'archived';
+  const flaggedArchived = Boolean(thread.archived) || Boolean(thread.isArchived) || status === 'archived';
+  return flaggedDeleted || flaggedArchived || Boolean(archivedAt) || Boolean(deletedAt);
+}
+
+function sourceToString(source) {
+  if (typeof source === 'string') {
+    return source;
+  }
+  if (source?.custom) {
+    return source.custom;
+  }
+  if (source?.subAgent) {
+    return 'subAgent';
+  }
+  return 'unknown';
+}
+
+function isStaleProjectlessDesktopSession(thread, session, { homeDir, pathExists, now }) {
+  if (sourceToString(thread?.source) !== 'vscode' || !session?.projectless) {
+    return false;
+  }
+  if (session.projectlessRegistered || session.mobileSessionKnown) {
+    return false;
+  }
+  const cwd = String(thread?.cwd || '').trim();
+  if (cwd && !pathSegmentsUnder(documentsCodexRoot(homeDir), cwd).length) {
+    return true;
+  }
+  if (cwd && pathExists(cwd)) {
+    return false;
+  }
+  const updatedAtMs = Number(thread?.updatedAt || 0) * 1000;
+  const twoDaysMs = 2 * 24 * 60 * 60 * 1000;
+  return !updatedAtMs || now() - updatedAtMs > twoDaysMs;
+}
+
+function subAgentMetaFromThread(thread, spawnEdge = null) {
+  const spawn = thread?.source?.subAgent?.thread_spawn || {};
+  const parentSessionId = spawn.parent_thread_id || spawnEdge?.parentSessionId || null;
+  if (!parentSessionId && !thread?.source?.subAgent && !spawnEdge) {
+    return { parentSessionId: null, subAgent: null };
+  }
+  return {
+    parentSessionId,
+    subAgent: {
+      nickname: thread?.agentNickname || spawn.agent_nickname || null,
+      role: thread?.agentRole || spawn.agent_role || null,
+      depth: Number.isFinite(Number(spawn.depth)) ? Number(spawn.depth) : null,
+      status: spawnEdge?.status || null
+    }
+  };
+}
+
+function desktopThreadRuntime(thread, contextState = {}) {
+  const runtime = publicRuntimeState(contextState.runtime, thread?.id);
+  if (runtime) {
+    return runtime;
+  }
+
+  const rawStatus = typeof thread?.status === 'object'
+    ? thread.status.type || thread.status.status || thread.status.phase
+    : thread?.status;
+  const status = String(rawStatus || '').trim().toLowerCase();
+  if (!['running', 'queued', 'pending', 'streaming', 'in_progress', 'in-progress', 'busy'].includes(status)) {
+    return null;
+  }
+  return {
+    status: 'running',
+    source: 'desktop-thread',
+    sessionId: thread.id,
+    turnId: thread.turnId || null,
+    startedAt: isoFromEpochSeconds(thread.startedAt) || null,
+    updatedAt: isoFromEpochSeconds(thread.updatedAt) || new Date().toISOString(),
+    steerable: false
+  };
+}
+
+async function sessionFromDesktopThread({
+  thread,
+  mobileSessionIndex,
+  projectlessThreadIds,
+  projectlessWorkdir,
+  visibleProjectIds,
+  configContext,
+  spawnEdge,
+  homeDir,
+  readRolloutContextState
+}) {
+  if (!thread?.id) {
+    return null;
+  }
+  const mobileSession = mobileSessionIndex.get(thread.id);
+  const hasDesktopCwd = typeof thread.cwd === 'string' && thread.cwd.trim();
+  const projectlessRegistered = projectlessThreadIds.has(thread.id);
+  const explicitProjectless = !hasDesktopCwd && (projectlessRegistered || Boolean(mobileSession?.projectless));
+  const cwd = thread.cwd || mobileSession?.projectPath || (explicitProjectless ? projectlessWorkdir : '');
+  if (!cwd && !explicitProjectless) {
+    return null;
+  }
+  const resolvedCwd = path.resolve(cwd || projectlessWorkdir);
+  const projectId = projectIdFor(resolvedCwd);
+  const projectless =
+    explicitProjectless ||
+    isDocumentsCodexConversationPath(resolvedCwd, homeDir) ||
+    !visibleProjectIds.has(projectId);
+  const preview = sanitizeVisibleUserMessage(thread.preview || mobileSession?.summary || '');
+  const mobileTitle = String(mobileSession?.title || '').trim();
+  const mobileTitleCandidate = mobileTitle && mobileTitle !== '新对话' ? mobileTitle : '';
+  const title = String(thread.name || mobileTitleCandidate || preview.slice(0, 52) || mobileTitle || '新对话').trim();
+  const mobileMessages = Array.isArray(mobileSession?.messages) ? mobileSession.messages : [];
+  const contextState = await readRolloutContextState(thread.path, thread.id);
+  const subAgentMeta = subAgentMetaFromThread(thread, spawnEdge);
+  return {
+    id: thread.id,
+    cwd: resolvedCwd,
+    projectId: projectless ? PROJECTLESS_PROJECT_ID : projectId,
+    title,
+    titleLocked: Boolean(mobileSession?.titleLocked),
+    titleAutoGenerated: mobileSession ? (mobileSession.titleLocked ? null : 'stored') : null,
+    summary: preview || mobileSession?.summary || title || 'Codex 会话',
+    model: mobileSession?.model || null,
+    provider: thread.modelProvider || mobileSession?.provider || null,
+    messageCount: mobileMessages.length,
+    updatedAt: isoFromEpochSeconds(thread.updatedAt) || mobileSession?.updatedAt || null,
+    source: sourceToString(thread.source),
+    parentSessionId: subAgentMeta.parentSessionId,
+    isSubAgent: Boolean(subAgentMeta.parentSessionId || subAgentMeta.subAgent),
+    subAgent: subAgentMeta.subAgent,
+    projectless,
+    projectlessRegistered,
+    mobileSessionKnown: Boolean(mobileSession),
+    filePath: thread.path || null,
+    runtime: desktopThreadRuntime(thread, contextState),
+    context: publicContextState(contextState, configContext)
+  };
+}
+
+function addSessionToMaps(session, projectById, sessionsByProject, sessionById) {
+  const project = projectById.get(session.projectId);
+  if (!project) {
+    return false;
+  }
+  if (!sessionsByProject.has(project.id)) {
+    sessionsByProject.set(project.id, []);
+  }
+  sessionsByProject.get(project.id).push(session);
+  sessionById.set(session.id, session);
+  return true;
+}
+
+function projectlessWorkingDirectory(workspaceState, { homeDir, pathExists }) {
+  const hints = workspaceState?.threadWorkspaceRootHints || {};
+  const projectlessIds = new Set(workspaceState?.projectlessThreadIds || []);
+  const counts = new Map();
+  for (const [threadId, root] of Object.entries(hints)) {
+    if (!projectlessIds.has(threadId) || typeof root !== 'string' || !root.trim()) {
+      continue;
+    }
+    const resolved = path.resolve(root);
+    counts.set(resolved, (counts.get(resolved) || 0) + 1);
+  }
+  const [mostUsedHint] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0] || [];
+  if (mostUsedHint) {
+    return mostUsedHint;
+  }
+  const documentsCodex = documentsCodexRoot(homeDir);
+  return pathExists(documentsCodex) ? documentsCodex : resolvedHomeDir(homeDir);
+}
+
+function upsertProjectlessProject(projectMap, workspaceState, helpers) {
+  const workdir = projectlessWorkingDirectory(workspaceState, helpers);
+  const existing = projectMap.get(PROJECTLESS_PROJECT_ID);
+  if (existing) {
+    existing.path = workdir;
+    return existing;
+  }
+  const entry = {
+    id: PROJECTLESS_PROJECT_ID,
+    name: PROJECTLESS_PROJECT_NAME,
+    path: workdir,
+    pathLabel: '无项目分类',
+    projectless: true,
+    trusted: true,
+    updatedAt: null,
+    sessionCount: 0
+  };
+  projectMap.set(PROJECTLESS_PROJECT_ID, entry);
+  return entry;
+}
+
+function upsertProject(projectMap, projectPath, trustLevel = null, label = null) {
+  const normalized = normalizeComparablePath(projectPath);
+  if (!normalized) {
+    return null;
+  }
+  const id = projectIdFor(projectPath);
+  const existing = projectMap.get(id);
+  if (existing) {
+    if (trustLevel) {
+      existing.trusted = trustLevel === 'trusted';
+    }
+    if (label) {
+      existing.name = label;
+    }
+    return existing;
+  }
+  const entry = {
+    id,
+    name: label || displayNameFor(projectPath),
+    path: path.resolve(projectPath),
+    trusted: trustLevel === 'trusted',
+    updatedAt: null,
+    sessionCount: 0
+  };
+  projectMap.set(id, entry);
+  return entry;
+}
+
+function asMap(value) {
+  if (value instanceof Map) {
+    return value;
+  }
+  return new Map(Object.entries(value || {}));
+}
+
+function asSet(value) {
+  if (value instanceof Set) {
+    return value;
+  }
+  return new Set(Array.isArray(value) ? value : []);
+}
+
+async function defaultReadRolloutContextState(_filePath, sessionId) {
+  return { sessionId };
+}
+
+export async function buildSessionIndex({
+  config = {},
+  workspaceState = {},
+  mobileSessionIndex = new Map(),
+  hiddenSessionIds = new Set(),
+  desktopThreads = [],
+  spawnEdges = [],
+  includeMissingSubagentThreads = false,
+  readDesktopThread = async () => null,
+  readRolloutContextState = defaultReadRolloutContextState,
+  pathExists = fsSync.existsSync,
+  homeDir = os.homedir,
+  now = Date.now
+} = {}) {
+  const projectById = new Map();
+  const sessionsByProject = new Map();
+  const sessionById = new Map();
+  const mobileIndex = asMap(mobileSessionIndex);
+  const hiddenIds = asSet(hiddenSessionIds);
+  const helpers = { homeDir, pathExists };
+  const configProjects = Array.isArray(config.projects) ? config.projects : [];
+  const workspaceProjects = Array.isArray(workspaceState.projects) ? workspaceState.projects : [];
+  const visibleProjects = workspaceProjects.length
+    ? workspaceProjects.map((project) => ({
+      path: project.path,
+      trustLevel: configProjects.find(
+        (entry) => normalizeComparablePath(entry.path) === normalizeComparablePath(project.path)
+      )?.trustLevel || 'trusted',
+      label: project.label
+    }))
+    : configProjects.map((project) => ({ ...project, label: null }));
+  const visibleProjectIds = new Set();
+  const projectlessThreadIds = new Set(workspaceState.projectlessThreadIds || []);
+  const projectlessWorkdir = projectlessWorkingDirectory(workspaceState, helpers);
+  const hasProjectlessSessions = projectlessThreadIds.size > 0;
+  const spawnEdgeByChildId = new Map(spawnEdges.map((edge) => [edge.childSessionId, edge]));
+
+  for (const project of visibleProjects) {
+    const entry = upsertProject(projectById, project.path, project.trustLevel, project.label);
+    if (entry) {
+      visibleProjectIds.add(entry.id);
+    }
+  }
+  if (hasProjectlessSessions) {
+    upsertProjectlessProject(projectById, workspaceState, helpers);
+    visibleProjectIds.add(PROJECTLESS_PROJECT_ID);
+  }
+
+  async function addThread(thread, spawnEdge = null) {
+    if (isArchivedOrDeletedDesktopThread(thread)) {
+      return;
+    }
+    const session = await sessionFromDesktopThread({
+      thread,
+      mobileSessionIndex: mobileIndex,
+      projectlessThreadIds,
+      projectlessWorkdir,
+      visibleProjectIds,
+      configContext: config.context || {},
+      spawnEdge,
+      homeDir,
+      readRolloutContextState
+    });
+    if (isStaleProjectlessDesktopSession(thread, session, { homeDir, pathExists, now })) {
+      return;
+    }
+    if (!session || hiddenIds.has(session.id)) {
+      return;
+    }
+    if (session.projectless) {
+      upsertProjectlessProject(projectById, workspaceState, helpers);
+      visibleProjectIds.add(PROJECTLESS_PROJECT_ID);
+    } else if (!visibleProjectIds.has(session.projectId)) {
+      return;
+    }
+    addSessionToMaps(session, projectById, sessionsByProject, sessionById);
+  }
+
+  for (const thread of desktopThreads) {
+    await addThread(thread, spawnEdgeByChildId.get(thread.id) || null);
+  }
+
+  for (const edge of spawnEdges) {
+    if (hiddenIds.has(edge.childSessionId)) {
+      continue;
+    }
+    const existing = sessionById.get(edge.childSessionId);
+    if (!existing) {
+      continue;
+    }
+    existing.parentSessionId = existing.parentSessionId || edge.parentSessionId;
+    existing.isSubAgent = true;
+    existing.subAgent = {
+      ...(existing.subAgent || {}),
+      status: existing.subAgent?.status || edge.status || null
+    };
+  }
+
+  if (includeMissingSubagentThreads) {
+    for (const edge of spawnEdges) {
+      if (hiddenIds.has(edge.childSessionId) || sessionById.has(edge.childSessionId)) {
+        continue;
+      }
+      let childThread = null;
+      try {
+        const response = await readDesktopThread(edge.childSessionId, { includeTurns: false });
+        childThread = response?.thread || response || null;
+      } catch {
+        continue;
+      }
+      await addThread(childThread, edge);
+    }
+  }
+
+  for (const [projectId, sessions] of sessionsByProject.entries()) {
+    sessions.sort((a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0));
+    const project = projectById.get(projectId);
+    if (project) {
+      const sessionIds = new Set(sessions.map((session) => session.id));
+      project.sessionCount = sessions.filter(
+        (session) => !session.parentSessionId || !sessionIds.has(session.parentSessionId)
+      ).length;
+      project.updatedAt = sessions[0]?.updatedAt || project.updatedAt;
+    }
+  }
+
+  for (const session of sessionById.values()) {
+    session.childCount = 0;
+    session.openChildCount = 0;
+  }
+  for (const session of sessionById.values()) {
+    if (!session.parentSessionId) {
+      continue;
+    }
+    const parent = sessionById.get(session.parentSessionId);
+    if (!parent) {
+      continue;
+    }
+    parent.childCount = (parent.childCount || 0) + 1;
+    if (session.subAgent?.status === 'open') {
+      parent.openChildCount = (parent.openChildCount || 0) + 1;
+    }
+  }
+
+  const projectOrder = new Map(visibleProjects.map((project, index) => [projectIdFor(project.path), index]));
+  const projects = [...projectById.values()].sort((a, b) => {
+    if (a.projectless !== b.projectless) {
+      return a.projectless ? -1 : 1;
+    }
+    const orderA = projectOrder.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+    const orderB = projectOrder.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+    return orderA - orderB || a.name.localeCompare(b.name, 'zh-Hans-CN');
+  });
+
+  return {
+    projects,
+    projectById,
+    sessionsByProject,
+    sessionById
+  };
+}

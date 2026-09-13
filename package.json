@@ -1,0 +1,43 @@
+{
+  "name": "codexmobile",
+  "version": "0.1.0",
+  "description": "iPhone-first PWA bridge for using a local Codex setup over a private network.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev:server": "node server/index.js",
+    "dev:client": "vite --host 0.0.0.0 --config client/vite.config.js",
+    "build": "vite build --config client/vite.config.js",
+    "start": "node server/index.js",
+    "start:env": "node --env-file=.env server/index.js",
+    "start:bg": "node scripts/start-server.mjs",
+    "asr:start": "node scripts/start-asr.mjs",
+    "postinstall": "node scripts/patch-codex-sdk.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "smoke:load": "node scripts/probe-server-load.mjs",
+    "test:server": "node --test --test-reporter=spec \"server/*.test.mjs\"",
+    "test:client": "node --test --test-reporter=spec \"client/src/**/*.test.mjs\" && vitest run",
+    "test": "npm run test:server && npm run test:client && npm run smoke:load",
+    "ipc:probe": "node scripts/probe-desktop-ipc.mjs",
+    "ipc:watch": "node scripts/watch-desktop-ipc.mjs",
+    "check:publication": "node scripts/check-publication.mjs"
+  },
+  "dependencies": {
+    "@openai/codex-sdk": "^0.147.0",
+    "@vitejs/plugin-react": "^4.6.0",
+    "lucide-react": "^0.515.0",
+    "opencc-js": "^1.0.5",
+    "pdfjs-dist": "^5.7.284",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "vite": "^7.0.4",
+    "web-push": "^3.6.7",
+    "ws": "^8.14.2"
+  },
+  "devDependencies": {
+    "jsdom": "^29.1.1",
+    "vitest": "^2.1.9"
+  }
+}

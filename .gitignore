@@ -1,0 +1,55 @@
+# Dependencies and build output
+node_modules/
+client/dist/
+dist/
+coverage/
+.vite/
+.cache/
+
+# Third-party binaries (downloaded out-of-band; never commit)
+bin/filebrowser.exe
+bin/ffmpeg.exe
+bin/ffprobe.exe
+# Stray filebrowser state if it's ever run with bin/ as cwd (real state lives under .codexmobile/)
+bin/database.db
+bin/tmp/
+
+# Local runtime state, uploads, generated files, pairing tokens, logs
+.codexmobile/
+server/.pid
+.tmp*
+.tmp*/
+_tmp*
+output/
+NUL
+Microsoft/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local environment files
+.env
+.env.*
+!.env.example
+*.local
+
+# Certificates, keys, and other private credentials
+*.pfx
+*.p12
+*.pem
+*.key
+*.cer
+*.crt
+*.jks
+*.keystore
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+AGENTS.md
+
+# Claude Code local-only settings (machine-specific permission grants)
+.claude/settings.local.json
