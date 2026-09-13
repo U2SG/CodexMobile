@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { isNearChatBottom, shouldFollowChatOutput } from './chat-scroll.js';
+import { explicitChatJumpBehavior, isNearChatBottom, shouldFollowChatOutput } from './chat-scroll.js';
 
 test('detects whether the chat pane is pinned near the bottom', () => {
   assert.equal(isNearChatBottom({ scrollHeight: 1200, scrollTop: 620, clientHeight: 500 }), true);
@@ -26,4 +26,9 @@ test('keeps following output when a message replacement temporarily loses the bo
     }),
     true
   );
+});
+
+test('explicit jump animates unless reduced motion is preferred', () => {
+  assert.equal(explicitChatJumpBehavior(false), 'smooth');
+  assert.equal(explicitChatJumpBehavior(true), 'auto');
 });

@@ -13,3 +13,7 @@ export function isNearChatBottom(pane, threshold = CHAT_BOTTOM_THRESHOLD_PX) {
 export function shouldFollowChatOutput({ pinnedToBottom, pinnedBeforeUpdate = false, force = false }) {
   return Boolean(force || pinnedToBottom || pinnedBeforeUpdate);
 }
+
+export function explicitChatJumpBehavior(prefersReducedMotion = false) {
+  return prefersReducedMotion ? 'auto' : 'smooth';
+}
