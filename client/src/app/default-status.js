@@ -14,25 +14,6 @@ export const DEFAULT_STATUS = {
   modelShort: null,
   reasoningEffort: 'xhigh',
   models: [],
-  docs: {
-    provider: 'feishu',
-    integration: 'lark-cli',
-    label: '飞书文档',
-    configured: false,
-    connected: false,
-    user: null,
-    homeUrl: 'https://docs.feishu.cn/',
-    cliInstalled: false,
-    skillsInstalled: false,
-    capabilities: [],
-    codexEnabled: false,
-    authorizationReady: false,
-    missingScopes: [],
-    scopeGroups: [],
-    slidesAuthorized: false,
-    sheetsAuthorized: false,
-    authPending: null
-  },
   voiceRealtime: { configured: false, model: 'qwen3.5-omni-plus-realtime', provider: '阿里百炼' },
   auth: { authenticated: false }
 };

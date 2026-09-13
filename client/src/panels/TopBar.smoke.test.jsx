@@ -20,7 +20,6 @@ function renderTopBar(props = {}) {
       desktopBridge={{ connected: false, reason: 'Desktop bridge unavailable', mode: 'desktop-ipc' }}
       peers={[]}
       onMenu={() => {}}
-      onOpenDocs={() => {}}
       onShowConnectionStatus={() => {}}
       {...props}
     />
@@ -48,6 +47,7 @@ test('TopBar makes the current session primary and keeps project/path as seconda
   expect(container.textContent).not.toContain('Desktop bridge unavailable');
   expect(container.textContent).not.toContain('桌面');
   expect(container.querySelector('.top-title')?.getAttribute('aria-label')).toContain('D:/example/mobile-project');
+  expect(container.querySelector('[aria-label="打开文档"]')).toBeNull();
 
   const statusLabel = container.querySelector('.top-meta .connection-status');
   expect(statusLabel?.getAttribute('aria-label')).toContain('Claude Code 已连接');

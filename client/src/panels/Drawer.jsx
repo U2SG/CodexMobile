@@ -20,7 +20,7 @@ import {
   Folder,
   GitBranch,
   Loader2,
-  MessageSquarePlus,
+  Plus,
   Pencil,
   Pin,
   PinOff,
@@ -294,7 +294,7 @@ function projectLabelForResult(cwd, matchedProject) {
   return segments[segments.length - 1] || '';
 }
 
-function SessionSearch({ peers, currentAgent, onSelectSession, onSelectProject, projects, selectedProject }) {
+function SessionSearch({ peers, currentAgent, onClose, onSelectSession, onSelectProject, onNewConversation, agent, projects, selectedProject }) {
   const [query, setQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [results, setResults] = useState([]);
@@ -385,25 +385,40 @@ function SessionSearch({ peers, currentAgent, onSelectSession, onSelectProject, 
 
   return (
     <section className="drawer-section drawer-search">
-      <div className="drawer-search-input">
-        <Search size={14} aria-hidden="true" />
-        <input
-          type="search"
-          placeholder="搜索项目或对话…"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          aria-label="搜索项目或对话"
-        />
-        {query ? (
-          <button
-            type="button"
-            className="drawer-search-clear"
-            onClick={() => setQuery('')}
-            aria-label="清空"
-          >
-            <X size={12} />
-          </button>
-        ) : null}
+      <div className="drawer-search-bar">
+        <button className="icon-button drawer-toolbar-close" onClick={onClose} aria-label="关闭菜单">
+          <X size={18} />
+        </button>
+        <div className="drawer-search-input">
+          <Search size={14} aria-hidden="true" />
+          <input
+            type="search"
+            placeholder="搜索项目或对话…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            aria-label="搜索项目或对话"
+          />
+          {query ? (
+            <button
+              type="button"
+              className="drawer-search-clear"
+              onClick={() => setQuery('')}
+              aria-label="清空"
+            >
+              <X size={12} />
+            </button>
+          ) : null}
+        </div>
+        <button
+          type="button"
+          className={`drawer-new-compact ${agent?.accentClass || ''}`}
+          onClick={onNewConversation}
+          aria-label="新对话"
+          title={agent?.newConversationHint ? `新对话 · ${agent.newConversationHint}` : '新对话'}
+        >
+          <Plus size={15} />
+          <span>新建</span>
+        </button>
       </div>
       {debouncedQuery ? (
         <div className="drawer-search-filters" role="group" aria-label="搜索过滤">
@@ -792,20 +807,17 @@ export function Drawer({
     <>
       <div className={`drawer-backdrop ${open ? 'is-open' : ''}`} onClick={onClose} />
       <aside className={`drawer ${open ? 'is-open' : ''}`}>
-        <div className="drawer-grip">
-          <button className="icon-button" onClick={onClose} aria-label="关闭菜单">
-            <X size={20} />
-          </button>
-          <button
-            type="button"
-            className={`icon-button drawer-new-icon ${agent.accentClass}`}
-            onClick={onNewConversation}
-            aria-label="新对话"
-            title={`新对话 · ${agent.newConversationHint}`}
-          >
-            <MessageSquarePlus size={20} />
-          </button>
-        </div>
+        <SessionSearch
+          peers={peers}
+          currentAgent={agent.id}
+          onClose={onClose}
+          onSelectSession={onSelectSession}
+          onSelectProject={onSelectProject}
+          onNewConversation={onNewConversation}
+          agent={agent}
+          projects={projects}
+          selectedProject={selectedProject}
+        />
 
         <PinnedSection
           projects={projects}
@@ -823,15 +835,6 @@ export function Drawer({
           onRenameFolder={onRenamePinFolder}
           onDeleteFolder={onDeletePinFolder}
           onToggleFolderCollapsed={onToggleFolderCollapsed}
-        />
-
-        <SessionSearch
-          peers={peers}
-          currentAgent={agent.id}
-          onSelectSession={onSelectSession}
-          onSelectProject={onSelectProject}
-          projects={projects}
-          selectedProject={selectedProject}
         />
 
         <section className={`drawer-section project-section ${projectsExpanded ? 'is-expanded' : 'is-collapsed'}`}>

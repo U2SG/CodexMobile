@@ -740,7 +740,7 @@ export async function buildCodexLarkCliContext(message = '') {
     : requestedInstruction
       ? [
           'CodexMobile Feishu/Lark was requested, but the integration is not currently authorized.',
-          'Do not run lark-cli commands. Reply in concise Chinese that Feishu authorization has expired or is unavailable, and ask the user to open the top-right Docs panel and reconnect Feishu.'
+          'Do not run lark-cli commands and do not point the user to an in-app Docs/Feishu panel: this build intentionally exposes no Feishu authorization UI. Reply in concise Chinese that Feishu is unavailable in the current UI.'
         ].join('\n')
       : '';
   const env = larkCliEnvironment();
