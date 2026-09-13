@@ -810,6 +810,18 @@ async function main() {
         } catch {
           return;
         }
+        if (frame?.type === 'liveness-probe' && typeof frame.id === 'string' && frame.id.length <= 128) {
+          try {
+            ws.send(JSON.stringify({
+              type: 'liveness-ack',
+              id: frame.id,
+              status: await publicStatus(true)
+            }));
+          } catch {
+            // A dead socket will be removed by close/heartbeat handling.
+          }
+          return;
+        }
         if (frame?.type === 'approval-response' && frame.requestId) {
           try {
             const { resolveCodexApproval } = await import('./codex-app-server-runner.js');

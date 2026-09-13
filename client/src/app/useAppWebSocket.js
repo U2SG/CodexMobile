@@ -57,6 +57,7 @@ export function useAppWebSocket({
 
     let stopped = false;
     let reconnectTimer = null;
+    let livenessProbe = null;
     const streamBuffer = createAssistantStreamBuffer();
     const backoff = createBackoff();
 
@@ -65,8 +66,16 @@ export function useAppWebSocket({
     // underlying TCP connection while the PWA is frozen, but readyState stays
     // OPEN and no close event ever fires.
     const HEARTBEAT_STALE_MS = 65_000;
+    const LIVENESS_ACK_TIMEOUT_MS = 2_500;
     let lastFrameAt = Date.now();
     const socketLooksStale = () => Date.now() - lastFrameAt > HEARTBEAT_STALE_MS;
+
+    const clearLivenessProbe = () => {
+      if (livenessProbe?.timeoutId) {
+        window.clearTimeout(livenessProbe.timeoutId);
+      }
+      livenessProbe = null;
+    };
 
     const scheduleReconnect = () => {
       if (stopped) return;
@@ -77,12 +86,13 @@ export function useAppWebSocket({
       reconnectTimer = window.setTimeout(connect, delay);
     };
 
-    const forceReconnectNow = () => {
+    const forceReconnectNow = ({ force = false } = {}) => {
       if (stopped) return;
       const ws = wsRef.current;
-      if (ws && ws.readyState === WebSocket.OPEN && !socketLooksStale()) {
+      if (!force && ws && ws.readyState === WebSocket.OPEN && !socketLooksStale()) {
         return;
       }
+      clearLivenessProbe();
       if (reconnectTimer) {
         window.clearTimeout(reconnectTimer);
         reconnectTimer = null;
@@ -109,13 +119,35 @@ export function useAppWebSocket({
       connect();
     };
 
+    const verifyForegroundConnection = () => {
+      if (stopped || livenessProbe) return;
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN || socketLooksStale()) {
+        forceReconnectNow();
+        return;
+      }
+      const id = `foreground-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      const timeoutId = window.setTimeout(() => {
+        if (livenessProbe?.id !== id) return;
+        livenessProbe = null;
+        forceReconnectNow({ force: true });
+      }, LIVENESS_ACK_TIMEOUT_MS);
+      livenessProbe = { id, socket: ws, timeoutId };
+      try {
+        ws.send(JSON.stringify({ type: 'liveness-probe', id }));
+      } catch {
+        clearLivenessProbe();
+        forceReconnectNow({ force: true });
+      }
+    };
+
     const handleVisibility = () => {
       if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
-        forceReconnectNow();
+        verifyForegroundConnection();
       }
     };
     const handleOnline = () => {
-      forceReconnectNow();
+      verifyForegroundConnection();
     };
 
     function applyAssistantUpdate(payload) {
@@ -146,6 +178,9 @@ export function useAppWebSocket({
         setConnectionState('connecting');
       };
       ws.onclose = () => {
+        if (livenessProbe?.socket === ws) {
+          clearLivenessProbe();
+        }
         setConnectionState('disconnected');
         scheduleReconnect();
       };
@@ -153,6 +188,16 @@ export function useAppWebSocket({
       ws.onmessage = (event) => {
         lastFrameAt = Date.now();
         const payload = JSON.parse(event.data);
+        if (payload.type === 'liveness-ack') {
+          if (livenessProbe && payload.id === livenessProbe.id) {
+            clearLivenessProbe();
+            const nextStatus = payload.status || defaultStatus;
+            setStatus(nextStatus);
+            setConnectionState(nextStatus.connected ? 'connected' : 'disconnected');
+            syncActiveRunsFromStatus(nextStatus);
+          }
+          return;
+        }
         if (payload.type === 'heartbeat') {
           if (payload.buildId) {
             // Merge only — a rebuilt client/dist flips status.buildId, which
@@ -434,6 +479,7 @@ export function useAppWebSocket({
 
     return () => {
       stopped = true;
+      clearLivenessProbe();
       window.clearInterval(heartbeatWatchdog);
       if (reconnectTimer) {
         window.clearTimeout(reconnectTimer);

@@ -1,10 +1,6 @@
-// Smoke for the visibility/online → forceReconnectNow path added in the
-// 阶段 A PWA WebSocket resilience work. The hook is too entangled to
-// unit-test directly, but jsdom is enough to assert two things that are
-// easy to break silently:
-//   1. Mounting the hook creates a WebSocket immediately.
-//   2. Firing document.visibilitychange (visible) while the socket is not
-//      OPEN constructs a second WebSocket — i.e. forceReconnectNow ran.
+// Smoke coverage for PWA WebSocket recovery. The hook is too entangled for a
+// pure unit test, but jsdom can verify mount/reconnect behavior plus the
+// foreground liveness probe/ack path that reconciles active task state.
 
 import React from 'react';
 import { act } from 'react';
@@ -33,6 +29,7 @@ class FakeWebSocket {
     this.onerror = null;
     this.onmessage = null;
     this.closeCalls = 0;
+    this.sent = [];
     constructed.push(this);
   }
 
@@ -44,14 +41,24 @@ class FakeWebSocket {
     // call counts.
   }
 
-  send() {}
+  send(value) {
+    this.sent.push(value);
+  }
   addEventListener() {}
   removeEventListener() {}
 }
 
 let lastDesktopBridge;
 
-function HookHost({ authenticated, onSetDesktopBridge, payloadMatchesCurrentConversation, pushApprovalRequest }) {
+function HookHost({
+  authenticated,
+  onSetDesktopBridge,
+  onSetConnectionState,
+  onSetStatus,
+  onSyncActiveRuns,
+  payloadMatchesCurrentConversation,
+  pushApprovalRequest
+}) {
   // Lazy-import inside the component so vi.stubGlobal patches land before
   // the module evaluates anything that captures globals at import time.
   const { useAppWebSocket } = require('./useAppWebSocket.js');
@@ -62,8 +69,8 @@ function HookHost({ authenticated, onSetDesktopBridge, payloadMatchesCurrentConv
     wsRef,
     selectedProjectRef: { current: null },
     selectedSessionRef: { current: null },
-    setConnectionState: () => {},
-    setStatus: () => {},
+    setConnectionState: (value) => onSetConnectionState?.(value),
+    setStatus: (value) => onSetStatus?.(value),
     setSelectedSession: () => {},
     setSessionsByProject: () => {},
     setMessages: () => {},
@@ -75,7 +82,7 @@ function HookHost({ authenticated, onSetDesktopBridge, payloadMatchesCurrentConv
       lastDesktopBridge = resolved;
       onSetDesktopBridge?.(resolved);
     },
-    syncActiveRunsFromStatus: () => {},
+    syncActiveRunsFromStatus: (status) => onSyncActiveRuns?.(status),
     markRun: () => {},
     clearRun: () => {},
     markTurnCompleted: () => {},
@@ -105,6 +112,7 @@ afterEach(async () => {
     root.unmount();
   });
   container.remove();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   localStorage.clear();
 });
@@ -154,12 +162,24 @@ test('window online event forces a reconnect when current socket is not OPEN', a
   expect(constructed.length).toBeGreaterThanOrEqual(2);
 });
 
-test('visibilitychange does NOT reconnect when the current socket is already OPEN', async () => {
+test('visibilitychange probes an OPEN socket and reconciles status from the ack', async () => {
+  vi.useFakeTimers();
+  const statuses = [];
+  const synced = [];
+  const connectionStates = [];
   await act(async () => {
-    root.render(<HookHost authenticated />);
+    root.render(
+      <HookHost
+        authenticated
+        onSetStatus={(value) => statuses.push(value)}
+        onSyncActiveRuns={(value) => synced.push(value)}
+        onSetConnectionState={(value) => connectionStates.push(value)}
+      />
+    );
   });
   expect(constructed).toHaveLength(1);
-  constructed[0].readyState = FakeWebSocket.OPEN;
+  const ws = constructed[0];
+  ws.readyState = FakeWebSocket.OPEN;
 
   Object.defineProperty(document, 'visibilityState', {
     configurable: true,
@@ -170,6 +190,58 @@ test('visibilitychange does NOT reconnect when the current socket is already OPE
   });
 
   expect(constructed).toHaveLength(1);
+  expect(ws.closeCalls).toBe(0);
+  const probe = JSON.parse(ws.sent.at(-1));
+  expect(probe.type).toBe('liveness-probe');
+  expect(typeof probe.id).toBe('string');
+
+  const status = {
+    connected: true,
+    activeRuns: [{ turnId: 'turn-live', sessionId: 'session-live' }]
+  };
+  await act(async () => {
+    ws.onmessage?.({
+      data: JSON.stringify({ type: 'liveness-ack', id: probe.id, status })
+    });
+  });
+
+  expect(statuses.at(-1)).toEqual(status);
+  expect(synced.at(-1)).toEqual(status);
+  expect(connectionStates.at(-1)).toBe('connected');
+
+  await act(async () => {
+    vi.advanceTimersByTime(2_600);
+  });
+  expect(constructed).toHaveLength(1);
+  expect(ws.closeCalls).toBe(0);
+  vi.useRealTimers();
+});
+
+test('missing foreground liveness ack replaces a zombie socket even when readyState stays OPEN', async () => {
+  vi.useFakeTimers();
+  await act(async () => {
+    root.render(<HookHost authenticated />);
+  });
+  expect(constructed).toHaveLength(1);
+  const first = constructed[0];
+  first.readyState = FakeWebSocket.OPEN;
+
+  Object.defineProperty(document, 'visibilityState', {
+    configurable: true,
+    get: () => 'visible'
+  });
+  await act(async () => {
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  expect(JSON.parse(first.sent.at(-1)).type).toBe('liveness-probe');
+
+  await act(async () => {
+    vi.advanceTimersByTime(2_600);
+  });
+
+  expect(first.closeCalls).toBe(1);
+  expect(constructed.length).toBeGreaterThanOrEqual(2);
+  vi.useRealTimers();
 });
 
 test('desktop-bridge-changed WS frame routes to setDesktopBridge', async () => {
