@@ -8033,3 +8033,232 @@ button {
     font-weight: 650;
   }
 }
+
+/* === Continuous surface: reduce card boundaries on mobile === */
+@media (max-width: 819px) {
+  .app-shell,
+  .top-bar,
+  .chat-pane,
+  .composer-wrap,
+  .drawer {
+    background: var(--surface);
+  }
+
+  .top-bar {
+    grid-template-columns: 44px minmax(0, 1fr) 44px;
+    gap: 4px;
+    padding: calc(env(safe-area-inset-top, 0px) + 4px) 12px 2px;
+    border-bottom: 0;
+    backdrop-filter: none;
+  }
+
+  .top-bar .icon-button {
+    width: 44px;
+    height: 44px;
+    border-radius: var(--radius-lg);
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .top-title {
+    grid-template-rows: 19px 15px;
+    min-height: 46px;
+    row-gap: 1px;
+    padding: 3px 4px;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .top-title strong {
+    font-size: var(--fs-body);
+    line-height: 19px;
+  }
+
+  .top-meta {
+    gap: 4px;
+  }
+
+  .chat-pane {
+    padding: 10px 14px 8px;
+  }
+
+  .message-row {
+    margin-bottom: 18px;
+  }
+
+  .message-row.is-user .message-stack {
+    max-width: min(84%, 560px);
+  }
+
+  .message-row.is-user .message-bubble {
+    padding: 10px 14px;
+    border-radius: var(--radius-xl);
+    background: #f5f5f3;
+  }
+
+  .message-content,
+  .message-row.is-user .message-content {
+    font-size: var(--fs-body);
+  }
+
+  .message-content {
+    line-height: 1.58;
+  }
+
+  .message-content.is-markdown > * + * {
+    margin-top: 0.74em;
+  }
+
+  .message-content.is-markdown li + li {
+    margin-top: 0.42em;
+  }
+
+  .message-actions {
+    margin-top: 5px;
+    gap: 8px;
+  }
+
+  .message-row.is-activity {
+    margin-bottom: 10px;
+  }
+
+  .message-row.is-activity .activity-bubble {
+    max-width: 100%;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .message-row.is-activity .activity-bubble.is-open {
+    padding-bottom: 10px;
+    border-radius: var(--radius-lg);
+    background: var(--panel-2);
+  }
+
+  .activity-summary {
+    min-height: 40px;
+    padding: 0 6px;
+  }
+
+  .composer-wrap {
+    padding: 4px 12px calc(env(safe-area-inset-bottom, 0px) + 8px);
+    border-top: 0;
+    backdrop-filter: none;
+  }
+
+  .composer {
+    grid-template-columns: 44px minmax(0, 1fr) 44px 44px;
+    gap: 4px;
+  }
+
+  .ghost-icon {
+    width: 44px;
+    height: 44px;
+    border-radius: var(--radius-lg);
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .composer textarea {
+    min-height: 44px;
+    padding: 10px 12px;
+    border: 0;
+    border-radius: var(--radius-xl);
+    background: #f5f5f3;
+    box-shadow: none;
+  }
+
+  .voice-button {
+    background: transparent;
+  }
+
+  .send-button {
+    border-radius: var(--radius-xl);
+  }
+
+  .drawer {
+    padding: calc(env(safe-area-inset-top, 0px) + 10px) 16px calc(env(safe-area-inset-bottom, 0px) + 16px);
+  }
+
+  .agent-overview {
+    margin-bottom: 16px;
+  }
+
+  .drawer-search {
+    padding: 0 0 6px;
+  }
+
+  .drawer-search-input {
+    min-height: 44px;
+    padding: 8px 10px;
+    border-radius: var(--radius-lg);
+  }
+
+  .drawer-section {
+    margin-bottom: 8px;
+  }
+
+  .pinned-section {
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .pinned-section .thread-row {
+    background: transparent;
+  }
+
+  .pinned-count {
+    padding-inline: 2px;
+    background: transparent;
+  }
+
+  .drawer-heading {
+    padding-bottom: 6px;
+  }
+
+  .project-list {
+    gap: 2px;
+  }
+
+  .project-row,
+  .thread-row {
+    min-height: 44px;
+  }
+
+  .thread-list {
+    margin-top: 0;
+  }
+
+  .thread-main {
+    padding-block: 2px;
+  }
+
+  .project-row.is-selected .project-main strong,
+  .thread-row.is-selected .thread-main > span {
+    font-weight: 700;
+  }
+
+  .tool-group {
+    border-top: 0;
+  }
+
+  [data-theme="dark"] .top-bar,
+  [data-theme="dark"] .chat-pane,
+  [data-theme="dark"] .composer-wrap,
+  [data-theme="dark"] .drawer {
+    background: var(--surface);
+  }
+
+  [data-theme="dark"] .message-row.is-user .message-bubble,
+  [data-theme="dark"] .composer textarea {
+    background: #242424;
+  }
+
+  [data-theme="dark"] .message-row.is-activity .activity-bubble.is-open {
+    background: #222222;
+  }
+}
