@@ -9,7 +9,6 @@ import { useLayoutEffect, useRef, useState } from 'react';
 import { Menu, Wifi, ChevronDown } from 'lucide-react';
 import { agentMeta } from '../agent-meta.js';
 import { CONNECTION_STATUS } from '../app/useConnectionActions.js';
-import { FeishuLogoIcon } from '../FeishuLogoIcon.jsx';
 
 function compactProjectName(name, max = 26) {
   const value = String(name || '').trim();
@@ -26,7 +25,6 @@ export function TopBar({
   selectedSession,
   connectionState,
   onMenu,
-  onOpenDocs,
   onShowConnectionStatus,
   status,
   desktopBridge,
@@ -164,9 +162,6 @@ export function TopBar({
           )}
         </span>
       </div>
-      <button type="button" className="icon-button" onClick={onOpenDocs} aria-label="打开文档">
-        <FeishuLogoIcon size={23} className="top-docs-logo" />
-      </button>
     </header>
   );
 }

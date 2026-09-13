@@ -8,7 +8,6 @@ import { currentBuildId } from './build-id.js';
 import { SkillPicker } from './skills/SkillPicker.jsx';
 import { useSkillCatalog } from './skills/useSkillCatalog.js';
 import { useClaudeSlashCommands } from './app/useClaudeSlashCommands.js';
-import { DocsPanel } from './panels/DocsPanel.jsx';
 import { Drawer } from './panels/Drawer.jsx';
 import { WorktreePicker } from './panels/WorktreePicker.jsx';
 import { PairingScreen } from './panels/PairingScreen.jsx';
@@ -53,7 +52,6 @@ import {
 } from './app/session-utils.js';
 import { useQueueDrafts } from './composer/useQueueDrafts.js';
 import { useDesktopBridge } from './app/useDesktopBridge.js';
-import { useDocsActions } from './app/useDocsActions.js';
 import { usePinActions } from './app/usePinActions.js';
 import { useTurnRuntime } from './app/useTurnRuntime.js';
 import { useVoiceDialog } from './app/useVoiceDialog.js';
@@ -124,15 +122,12 @@ export default function App() {
   };
   const [previewImage, setPreviewImage] = useState(null);
   const [imageIntentConfirmation, setImageIntentConfirmation] = useState(null);
-  const [docsOpen, setDocsOpen] = useState(false);
   const [gitOpen, setGitOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
   // Peer CodexMobile servers (claude side from codex, etc.). Fetched once
   // on auth; empty list when CODEXMOBILE_PEER_URLS is unset.
   const [peers, setPeers] = useState([]);
-  const [docsBusy, setDocsBusy] = useState(false);
-  const [docsError, setDocsError] = useState('');
   // Composer draft survives an iOS PWA kill/reload — the OS reclaims frozen
   // pages aggressively, and losing a half-typed prompt is the worst way to
   // find out. Cleared on send (setInput('')) via the persistence effect below.
@@ -592,21 +587,6 @@ export default function App() {
     handleVoiceSubmit
   });
 
-  const {
-    handleConnectDocs,
-    handleDisconnectDocs,
-    handleRefreshDocs,
-    handleOpenDocsHome,
-    handleOpenDocsAuth
-  } = useDocsActions({
-    docsBusy,
-    status,
-    setDocsBusy,
-    setDocsError,
-    setStatus,
-    loadStatus
-  });
-
   const shellClass = useMemo(() => (drawerOpen ? 'app-shell drawer-active' : 'app-shell'), [drawerOpen]);
   const recoveryState = useMemo(() => connectionRecoveryState({
     authenticated,
@@ -630,7 +610,6 @@ export default function App() {
         desktopBridge={desktopBridge}
         peers={peers}
         onMenu={() => setDrawerOpen(true)}
-        onOpenDocs={() => setDocsOpen(true)}
         onShowConnectionStatus={handleShowConnectionStatus}
       />
       <ConnectionRecoveryCard
@@ -681,18 +660,6 @@ export default function App() {
         desktopBridge={desktopBridge}
         runtimePrefs={runtimePrefsState}
         onSetRuntimePref={handleSetRuntimePref}
-      />
-      <DocsPanel
-        open={docsOpen}
-        docs={status.docs}
-        busy={docsBusy}
-        error={docsError}
-        onClose={() => setDocsOpen(false)}
-        onConnect={handleConnectDocs}
-        onDisconnect={handleDisconnectDocs}
-        onOpenHome={handleOpenDocsHome}
-        onOpenAuth={handleOpenDocsAuth}
-        onRefresh={handleRefreshDocs}
       />
       {gitOpen && selectedProject ? (
         <div style={modalBackdropStyle} onClick={() => setGitOpen(false)}>
