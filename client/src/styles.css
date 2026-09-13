@@ -8027,6 +8027,8 @@ button {
   }
 
   .pinned-section {
+    max-height: none;
+    margin-bottom: 4px;
     padding: 0;
     border: 0;
     border-radius: 0;
@@ -8034,34 +8036,113 @@ button {
     box-shadow: none;
   }
 
+  .pinned-section.is-expanded {
+    max-height: min(24svh, 180px);
+    overflow-y: auto;
+  }
+
+  .pinned-section .pinned-heading {
+    margin: 0;
+    padding: 0 2px 2px;
+  }
+
+  .pinned-section-toggle {
+    gap: 3px;
+    min-height: var(--touch);
+    padding-inline: 2px;
+    color: var(--muted);
+    font-size: var(--fs-caption);
+    font-weight: 650;
+  }
+
+  .pinned-count {
+    margin-left: 2px;
+    padding: 0;
+    color: var(--muted);
+    background: transparent;
+    font-size: var(--fs-micro);
+  }
+
+  .pinned-list {
+    gap: 0;
+    padding-right: 0;
+  }
+
+  .pinned-folder-header {
+    padding: 0 2px;
+  }
+
+  .pinned-folder > .thread-list {
+    margin-left: 8px;
+  }
+
   .pinned-section .thread-row {
     background: transparent;
   }
 
-  .pinned-count {
-    padding-inline: 2px;
-    background: transparent;
+  .thread-row.is-pinned .thread-pin-indicator {
+    color: var(--muted);
   }
 
   .drawer-heading {
-    padding-bottom: 6px;
+    padding: 0 4px 4px;
   }
 
   .project-list {
-    gap: 2px;
+    gap: 0;
   }
 
-  .project-row,
+  .project-row {
+    position: relative;
+    min-height: 44px;
+    padding: 5px 6px;
+    border-radius: var(--radius-sm);
+  }
+
   .thread-row {
     min-height: 44px;
+    padding: 2px 4px;
+    border-radius: var(--radius-sm);
+  }
+
+  .project-row.is-selected,
+  .thread-row.is-selected,
+  .thread-row.is-draft.is-selected {
+    color: var(--text);
+    background: transparent;
+    box-shadow: inset 2px 0 0 var(--select);
+  }
+
+  [data-theme="dark"] .project-row.is-selected,
+  [data-theme="dark"] .thread-row.is-selected,
+  [data-theme="dark"] .thread-row.is-draft.is-selected {
+    color: var(--text);
+    background: transparent;
+  }
+
+  .project-row .project-count,
+  .project-row.is-selected .project-count {
+    min-width: 0;
+    padding-inline: 0;
+    color: var(--muted);
+    background: transparent;
   }
 
   .thread-list {
-    margin-top: 0;
+    margin: 0 0 4px 14px;
+    padding-left: 2px;
+    border-left: 0;
   }
 
   .thread-main {
-    padding-block: 2px;
+    min-height: 40px;
+    padding: 2px 4px;
+    gap: 1px;
+  }
+
+  .thread-main small {
+    gap: 4px;
+    opacity: 0.78;
   }
 
   .project-row.is-selected .project-main strong,
