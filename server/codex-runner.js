@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { buildCodexLarkCliContext } from './lark-cli.js';
 import { detectFeishuSkillKeys } from './feishu-skills.js';
 import { isClaudeMode } from './agent-mode.js';
+import { recordClaudeResolvedModel } from './claude-config.js';
 import { readCodexModels } from './codex-config.js';
 import { claudeAssistantMessageId, createClaudePartialStreamState, processClaudePartialStreamEvent } from './claude-stream.js';
 import { buildClaudeSkillsAppendix } from './claude-skills.js';
@@ -930,6 +931,7 @@ async function runClaudeTurn({ sessionId, draftSessionId, projectPath, message, 
   emitStatus(emit, { sessionId: currentSessionId, turnId, kind: 'reasoning', status: 'running', label: '正在思考' });
 
   const skillsAppendix = await buildClaudeSkillsAppendix(selectedSkills);
+  const requestedClaudeModel = resolveClaudeModel(model);
   const args = [
     '-p',
     '--verbose',
@@ -938,7 +940,7 @@ async function runClaudeTurn({ sessionId, draftSessionId, projectPath, message, 
     '--permission-mode',
     mapClaudePermissionMode(permissionMode),
     '--model',
-    resolveClaudeModel(model)
+    requestedClaudeModel
   ];
   if (skillsAppendix) {
     args.push('--append-system-prompt', skillsAppendix);
@@ -1176,12 +1178,16 @@ async function runClaudeTurn({ sessionId, draftSessionId, projectPath, message, 
           });
         }
       } else if (event.type === 'system' && event.subtype === 'init') {
+        const resolvedModel = String(event.model || '').trim();
+        if (resolvedModel) {
+          await recordClaudeResolvedModel(requestedClaudeModel, resolvedModel);
+        }
         emitStatus(emit, {
           sessionId: currentSessionId,
           turnId,
           kind: 'reasoning',
           status: 'running',
-          label: `Claude Code ${event.model || model || 'sonnet'}`
+          label: `Claude Code ${resolvedModel || requestedClaudeModel}`
         });
       }
     }
