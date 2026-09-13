@@ -29,6 +29,7 @@ import {
   Search,
   Settings,
   Trash2,
+  Wifi,
   X
 } from 'lucide-react';
 import { apiFetch } from '../api.js';
@@ -516,6 +517,7 @@ export function Drawer({
   onOpenGit,
   onOpenNotifications,
   onOpenActivity,
+  onShowConnectionStatus,
   peers = [],
   syncing,
   theme,
@@ -733,6 +735,15 @@ export function Drawer({
                   </button>
                 </div>
               </div>
+              {onShowConnectionStatus ? (
+                <button type="button" className="settings-entry" onClick={onShowConnectionStatus}>
+                  <span>
+                    <Wifi size={18} />
+                    连接详情
+                  </span>
+                  <ChevronRight size={17} />
+                </button>
+              ) : null}
               <button type="button" className="settings-entry" onClick={onOpenNotifications}>
                 <span>
                   <Bell size={18} />
