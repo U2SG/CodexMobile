@@ -35,6 +35,7 @@ export function createDesktopThreadTracker({
   let activityListeners = new Set();
   let connectionListeners = new Set();
   let client = null;
+  let pendingClient = null;
   let reconnectTimer = null;
   let stopped = true;
   let connecting = false;
@@ -102,13 +103,19 @@ export function createDesktopThreadTracker({
       onBroadcast: handleBroadcast,
       onClose: handleClose
     });
+    pendingClient = next;
     try {
       await next.connect({ timeoutMs: Math.min(maxReconnectMs, 5000) });
+      if (stopped) {
+        next.close();
+        return;
+      }
       client = next;
       backoff = reconnectMs; // reset on successful connect
       emitConnectionState('connected');
     } catch (error) {
       next.close();
+      if (stopped) return;
       // ENOENT just means desktop isn't running — silent until it changes.
       if (error?.code !== 'ENOENT' && !/ENOENT/.test(error?.message || '')) {
         console.warn(`[thread-tracker] connect failed: ${error.message}`);
@@ -116,6 +123,9 @@ export function createDesktopThreadTracker({
       emitConnectionState('disconnected');
       scheduleReconnect();
     } finally {
+      if (pendingClient === next) {
+        pendingClient = null;
+      }
       connecting = false;
     }
   }
@@ -133,6 +143,8 @@ export function createDesktopThreadTracker({
         clearTimeout(reconnectTimer);
         reconnectTimer = null;
       }
+      pendingClient?.close();
+      pendingClient = null;
       client?.close();
       client = null;
     },
