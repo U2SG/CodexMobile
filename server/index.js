@@ -599,6 +599,15 @@ async function getClientBuildId() {
   return clientBuildIdCache.value;
 }
 
+function activeRunsSnapshot() {
+  return [
+    ...getCodexActiveRuns(),
+    ...desktopTurnMonitor.getActiveRuns(),
+    ...(chatService?.getActiveDesktopIpcRuns?.() || []),
+    ...getActiveImageRuns()
+  ];
+}
+
 async function publicStatus(authenticated) {
   const snapshot = getCacheSnapshot();
   const config = snapshot.config || {};
@@ -619,12 +628,7 @@ async function publicStatus(authenticated) {
     voiceRealtime: publicVoiceRealtimeStatus(config),
     docs: await publicDocsStatus(authenticated),
     syncedAt: snapshot.syncedAt,
-    activeRuns: [
-      ...getCodexActiveRuns(),
-      ...desktopTurnMonitor.getActiveRuns(),
-      ...(chatService?.getActiveDesktopIpcRuns?.() || []),
-      ...getActiveImageRuns()
-    ],
+    activeRuns: activeRunsSnapshot(),
     auth: {
       required: true,
       authenticated,
@@ -808,6 +812,18 @@ async function main() {
         try {
           frame = JSON.parse(raw.toString('utf8'));
         } catch {
+          return;
+        }
+        if (frame?.type === 'liveness-probe' && typeof frame.id === 'string' && frame.id.length <= 128) {
+          try {
+            ws.send(JSON.stringify({
+              type: 'liveness-ack',
+              id: frame.id,
+              activeRuns: activeRunsSnapshot()
+            }));
+          } catch {
+            // A dead socket will be removed by close/heartbeat handling.
+          }
           return;
         }
         if (frame?.type === 'approval-response' && frame.requestId) {

@@ -136,11 +136,21 @@ export function useTurnRuntime({
 
   function syncActiveRunsFromStatus(nextStatus) {
     const activeRuns = Array.isArray(nextStatus?.activeRuns) ? nextStatus.activeRuns : [];
+    const shouldPreserveLocalRuns =
+      activePollsRef.current.size > 0 ||
+      turnRefreshTimersRef.current.size > 0 ||
+      Date.now() - lastLocalRunAtRef.current < 15000;
 
     if (!activeRuns.length) {
+      if (!shouldPreserveLocalRuns) {
+        setRunningById(() => {
+          const next = {};
+          runningByIdRef.current = next;
+          return next;
+        });
+      }
       setMessages((current) => {
-        const hasRecentLocalRun = Date.now() - lastLocalRunAtRef.current < 15000;
-        if (activePollsRef.current.size || turnRefreshTimersRef.current.size || hasRecentLocalRun) {
+        if (shouldPreserveLocalRuns) {
           return current;
         }
         return current.filter(
@@ -156,10 +166,6 @@ export function useTurnRuntime({
         nextRunning[key] = true;
       }
     }
-    const shouldPreserveLocalRuns =
-      activePollsRef.current.size > 0 ||
-      turnRefreshTimersRef.current.size > 0 ||
-      Date.now() - lastLocalRunAtRef.current < 15000;
     setRunningById((current) => {
       const next = shouldPreserveLocalRuns ? { ...current, ...nextRunning } : nextRunning;
       runningByIdRef.current = next;
