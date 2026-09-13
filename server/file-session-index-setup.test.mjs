@@ -9,6 +9,24 @@ let tmpRoot;
 let codexDir;
 let claudeDir;
 
+async function waitForAtomicPersistence(stateDir, expectedFile, { timeoutMs = 2000, pollMs = 20 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let files = [];
+  while (Date.now() < deadline) {
+    try {
+      files = (await fs.readdir(stateDir)).sort();
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+      files = [];
+    }
+    if (files.length === 1 && files[0] === expectedFile) {
+      return files;
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+  return files;
+}
+
 beforeEach(async () => {
   tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'fsi-setup-'));
   codexDir = path.join(tmpRoot, 'codex-sessions');
@@ -64,14 +82,14 @@ test('build (via getFilesForSession) writes a single atomic persistence file', a
     codexSessionsDir: codexDir,
     claudeProjectsDir: claudeDir
   });
-  // getFilesForSession awaits ensureBuilt(); the savePersistence inside build()
-  // is fire-and-forget, so give it a tick.
+  // getFilesForSession awaits ensureBuilt(), but persistence is intentionally
+  // fire-and-forget. Wait on the observable atomic-write contract instead of
+  // guessing that a fixed 50ms delay is enough on every Windows runner.
   await bundle.fileSessionIndex.getFilesForSession('sess-1');
-  await new Promise((resolve) => setTimeout(resolve, 50));
 
   const stateDir = path.join(tmpRoot, '.codexmobile', 'state');
-  const files = await fs.readdir(stateDir);
-  assert.deepEqual(files.sort(), ['file-session-index.json']);
+  const files = await waitForAtomicPersistence(stateDir, 'file-session-index.json');
+  assert.deepEqual(files, ['file-session-index.json']);
 });
 
 test('classifies indexed records by which root the rollout lives under', async () => {
