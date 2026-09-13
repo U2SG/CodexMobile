@@ -172,7 +172,7 @@ test('getSessionsForFile returns sessions sorted by recency, de-duped', async ()
     listRolloutFiles: async () => Object.keys(rollouts),
     readRolloutFile: async (name) => rollouts[name]
   });
-  const hits = await index.getSessionsForFile(path.resolve('C:/repo', 'src/foo.js'));
+  const hits = await index.getSessionsForFile(path.win32.resolve('C:/repo', 'src/foo.js'));
   // recent-session counted ONCE despite two touches; sorted ahead of old-session
   assert.deepEqual(hits.map((h) => h.sessionId), ['recent-session', 'old-session']);
 });
@@ -192,8 +192,8 @@ test('getSessionsForFile resolves relative apply_patch paths against session cwd
     listRolloutFiles: async () => Object.keys(rollouts),
     readRolloutFile: async (name) => rollouts[name]
   });
-  const inOne = await index.getSessionsForFile(path.resolve('C:/repo-one', 'src/foo.js'));
-  const inTwo = await index.getSessionsForFile(path.resolve('C:/repo-two', 'src/foo.js'));
+  const inOne = await index.getSessionsForFile(path.win32.resolve('C:/repo-one', 'src/foo.js'));
+  const inTwo = await index.getSessionsForFile(path.win32.resolve('C:/repo-two', 'src/foo.js'));
   assert.deepEqual(inOne.map((h) => h.sessionId), ['s1']);
   assert.deepEqual(inTwo.map((h) => h.sessionId), ['s2']);
 });
@@ -284,7 +284,7 @@ test('readRolloutFile errors are skipped without breaking the build', async () =
 });
 
 test('Windows absolute paths normalize to the same key (D:\\ vs d:\\)', async () => {
-  if (process.platform !== 'win32') return; // case-insensitive normalization is win32-only
+  // Windows rollout paths must normalize consistently on Windows and POSIX hosts.
   const rollouts = {
     'a.jsonl': rolloutJsonl([
       metaLine({ id: 'win', cwd: 'D:\\Project' }),
@@ -480,7 +480,7 @@ test('file-session-index handles a mix of codex + claude rollouts in one index',
     listRolloutFiles: async () => Object.keys(rollouts).map((p) => ({ path: p, mtimeMs: 1 })),
     readRolloutFile: async (name) => rollouts[name]
   });
-  const hits = await index.getSessionsForFile(path.resolve('D:/repo', 'src/foo.js'));
+  const hits = await index.getSessionsForFile(path.win32.resolve('D:/repo', 'src/foo.js'));
   // Both sessions appear; ordering by touchedAt — claude later, codex earlier.
   assert.equal(hits.length, 2);
   const ids = hits.map((h) => h.sessionId).sort();
@@ -677,8 +677,8 @@ test('getFilesForSession returns files touched by the given session', async () =
   const a = await index.getFilesForSession('sess-a');
   assert.equal(a.cwd, 'C:/repo');
   assert.deepEqual(a.files.map((f) => f.path).sort(), [
-    path.resolve('C:/repo', 'src/existing.js'),
-    path.resolve('C:/repo', 'src/new.js')
+    path.win32.resolve('C:/repo', 'src/existing.js'),
+    path.win32.resolve('C:/repo', 'src/new.js')
   ].sort());
   const b = await index.getFilesForSession('sess-b');
   assert.equal(b.files.length, 1);
@@ -731,7 +731,7 @@ test('getFilesForSession de-dupes paths (same file touched multiple times)', asy
   assert.equal(r.files.length, 2);
   assert.deepEqual(
     r.files.map((f) => f.path).sort(),
-    [path.resolve('C:/repo', 'src/bar.js'), path.resolve('C:/repo', 'src/foo.js')].sort()
+    [path.win32.resolve('C:/repo', 'src/bar.js'), path.win32.resolve('C:/repo', 'src/foo.js')].sort()
   );
 });
 
