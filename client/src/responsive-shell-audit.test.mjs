@@ -14,4 +14,11 @@ test('Continuous Surface follows the app shell width, not only the browser viewp
   assert.ok(blockStart - marker < 200, 'Continuous Surface should start with the root container query');
   const legacyMedia = styles.indexOf('@media (max-width: 819px) {', marker);
   assert.ok(legacyMedia === -1 || legacyMedia - marker > 200, 'Continuous Surface must not fall back to viewport-only media');
+  const shellSurface = styles.slice(blockStart);
+  const turnCard = shellSurface.indexOf('.turn-card {');
+  assert.notEqual(turnCard, -1, 'narrow shell must style TurnGroup directly');
+  const turnCardRule = shellSurface.slice(turnCard, turnCard + 260);
+  assert.ok(turnCardRule.includes('background: transparent;'));
+  assert.ok(turnCardRule.includes('border: 0;'));
+  assert.ok(turnCardRule.includes('box-shadow: none;'));
 });
