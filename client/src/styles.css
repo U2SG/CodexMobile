@@ -102,6 +102,11 @@ body,
   overscroll-behavior: none;
 }
 
+#root {
+  container-type: inline-size;
+  container-name: codexmobile-shell;
+}
+
 body {
   position: fixed;
   inset: 0;
@@ -7847,8 +7852,8 @@ button {
   }
 }
 
-/* === Continuous surface: reduce card boundaries on mobile === */
-@media (max-width: 819px) {
+/* === Continuous surface: reduce card boundaries in a narrow app shell === */
+@container codexmobile-shell (max-width: 819px) {
   .app-shell,
   .top-bar,
   .chat-pane,
