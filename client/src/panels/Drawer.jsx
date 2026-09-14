@@ -1,14 +1,12 @@
-// Project / session drawer. Houses the agent overview, new-conversation
-// button, pinned sessions (delegated to PinnedSection), grouped project +
-// thread list, codex-only quota widget (额度查询 with multi-account
-// switching), Git / settings / notifications entry points, and the theme
-// preferences sub-view.
+// Project / session drawer. Houses the new-conversation button, pinned
+// sessions (delegated to PinnedSection), grouped project + thread list,
+// direct conversation sync, the single-account Codex quota view, Git /
+// settings / notifications entry points, and the theme preferences sub-view.
 //
 // Extracted from App.jsx (Batch G R23). All inputs flow in as props. The
-// Codex quota fetch + switch is owned here (it's only consumed by this
-// panel); the per-row stopThreadAction helper, the quota formatting
-// helpers, and the project-group renderer are all module-private since
-// no other consumer needs them.
+// Codex quota fetch is owned here (it's only consumed by this panel); the
+// per-row stopThreadAction helper, quota formatting helpers, and project-group
+// renderer are all module-private since no other consumer needs them.
 
 import { useEffect, useMemo, useState } from 'react';
 import {
@@ -586,17 +584,16 @@ export function Drawer({
     localStorage.setItem('codexmobile.pinnedSectionExpanded', pinnedExpanded ? '1' : '0');
   }, [pinnedExpanded]);
   const [toolGroupExpanded, setToolGroupExpanded] = useState(() => {
-    if (typeof localStorage === 'undefined') return { sync: false, ops: false, settings: false };
+    if (typeof localStorage === 'undefined') return { ops: false, settings: false };
     try {
       const raw = localStorage.getItem('codexmobile.toolGroupExpanded');
       const parsed = raw ? JSON.parse(raw) : null;
       return {
-        sync: Boolean(parsed?.sync),
         ops: Boolean(parsed?.ops),
         settings: Boolean(parsed?.settings)
       };
     } catch {
-      return { sync: false, ops: false, settings: false };
+      return { ops: false, settings: false };
     }
   });
   useEffect(() => {
@@ -606,13 +603,10 @@ export function Drawer({
   function toggleToolGroup(key) {
     setToolGroupExpanded((current) => ({ ...current, [key]: !current[key] }));
   }
-  const [quotaExpanded, setQuotaExpanded] = useState(false);
   const [quotaLoading, setQuotaLoading] = useState(false);
   const [quotaLoaded, setQuotaLoaded] = useState(false);
   const [quotaError, setQuotaError] = useState('');
-  const [quotaAccounts, setQuotaAccounts] = useState([]);
-  const [quotaSwitchingAvailable, setQuotaSwitchingAvailable] = useState(false);
-  const [quotaSwitchingAccountId, setQuotaSwitchingAccountId] = useState('');
+  const [quotaAccount, setQuotaAccount] = useState(null);
   const [showOlderProjects, setShowOlderProjects] = useState(false);
   const [showOtherProjects, setShowOtherProjects] = useState(false);
   const [archivedExpanded, setArchivedExpanded] = useState(false);
@@ -664,42 +658,18 @@ export function Drawer({
     if (quotaLoading) {
       return;
     }
-    setQuotaExpanded(true);
     setQuotaLoading(true);
     setQuotaError('');
     try {
       const result = await apiFetch('/api/quotas/codex');
-      setQuotaAccounts(Array.isArray(result.accounts) ? result.accounts : []);
-      setQuotaSwitchingAvailable(Boolean(result.switchingAvailable));
+      setQuotaAccount(result.account || (Array.isArray(result.accounts) ? result.accounts[0] : null) || null);
       setQuotaLoaded(true);
     } catch {
+      setQuotaAccount(null);
       setQuotaError('查询失败，点击刷新重试');
       setQuotaLoaded(true);
     } finally {
       setQuotaLoading(false);
-    }
-  }
-
-  async function switchCodexQuotaAccount(accountId) {
-    const id = String(accountId || '');
-    if (!id || quotaSwitchingAccountId) {
-      return;
-    }
-    setQuotaExpanded(true);
-    setQuotaError('');
-    setQuotaSwitchingAccountId(id);
-    try {
-      const result = await apiFetch('/api/quotas/codex/switch', {
-        method: 'POST',
-        body: { accountId: id }
-      });
-      setQuotaAccounts(Array.isArray(result.accounts) ? result.accounts : []);
-      setQuotaSwitchingAvailable(Boolean(result.switchingAvailable));
-      setQuotaLoaded(true);
-    } catch {
-      setQuotaError('切换失败，点击刷新重试');
-    } finally {
-      setQuotaSwitchingAccountId('');
     }
   }
 
@@ -984,137 +954,75 @@ export function Drawer({
         <section className="drawer-section drawer-controls">
           <div className="drawer-sublabel">工具与服务</div>
 
-          {/* "同步与额度" is codex-exclusive: 额度查询 hits cli-proxy-api
-             (Codex/OpenAI accounts) and the Codex desktop session-cache
-             sync semantics don't apply on the claude route. Hide the whole
-             tool-group on claude. */}
+          {/* Codex-only local controls. Keep both actions direct: one sync
+              button and one quota refresh button for the single ChatGPT account. */}
           {agent.id === 'codex' ? (
-          <div className={`tool-group ${toolGroupExpanded.sync ? 'is-expanded' : ''}`}>
-            <button type="button" className="tool-group-header" onClick={() => toggleToolGroup('sync')} aria-expanded={toolGroupExpanded.sync}>
-              <RefreshCw size={16} />
-              <span>同步与额度</span>
-              <ChevronDown size={16} className="tool-group-chevron" />
-            </button>
-            {toolGroupExpanded.sync ? (
-              <div className="tool-group-body">
-                <div className="control-row sync-row">
-                  <span>对话同步</span>
-                  <button className="sync-button" onClick={onSync} disabled={syncing}>
-                    {syncing ? <Loader2 className="spin" size={16} /> : null}
-                    同步
-                  </button>
-                  <span className="sync-spacer" aria-hidden="true" />
-                </div>
-                <div className={`quota-widget is-flat ${quotaExpanded ? 'is-expanded' : ''}`}>
-            <div className="quota-row">
-              <button
-                type="button"
-                className="quota-main"
-                onClick={() => setQuotaExpanded((current) => !current)}
-              >
-                <span className="quota-title">额度查询</span>
-                <span className="quota-kind">Codex</span>
+            <>
+              <button type="button" className="tool-group-action drawer-sync-action" onClick={onSync} disabled={syncing}>
+                {syncing ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
+                <span>{syncing ? '同步中' : '同步对话'}</span>
+                <small>{syncing ? '正在刷新会话列表' : '刷新本机会话列表'}</small>
               </button>
-              <button
-                type="button"
-                className="quota-refresh"
-                onClick={refreshCodexQuota}
-                disabled={quotaLoading}
-              >
-                {quotaLoading ? '刷新中...' : '刷新'}
-              </button>
-              <button
-                type="button"
-                className="quota-toggle"
-                onClick={() => setQuotaExpanded((current) => !current)}
-                aria-label={quotaExpanded ? '收起额度查询' : '展开额度查询'}
-              >
-                <ChevronDown size={16} />
-              </button>
-            </div>
-            {quotaExpanded ? (
-              <div className="quota-panel">
-                <div className="quota-scope-note">
-                  仅作用于本机 CLI（CLIProxyAPI）；桌面端 Codex 走自己的登录，需要在 desktop 应用内切换。
-                </div>
+
+              <div className="quota-single">
+                <button type="button" className="tool-group-action quota-single-refresh" onClick={refreshCodexQuota} disabled={quotaLoading}>
+                  {quotaLoading ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
+                  <span>{quotaLoading ? '刷新额度中' : '刷新额度'}</span>
+                  <small>{quotaAccount ? `${quotaAccount.plan || 'Codex'} · ${quotaAccount.label || '当前 ChatGPT 账号'}` : '当前 ChatGPT 账号'}</small>
+                </button>
+
                 {quotaError ? (
                   <button type="button" className="quota-error" onClick={refreshCodexQuota}>
                     {quotaError}
                   </button>
                 ) : null}
-                {!quotaError && quotaAccounts.length ? (
-                  quotaAccounts.map((account) => {
-                    const windows = Array.isArray(account.windows) ? account.windows : [];
-                    const accountStatus = account.status || 'ok';
-                    const plan = account.plan || 'Codex';
-                    const switchable = quotaSwitchingAvailable && account.switchable;
-                    const isCurrentAccount = switchable && account.active && !account.disabled;
-                    const isSwitchingAccount = quotaSwitchingAccountId === account.id;
-                    const isDisabled = Boolean(account.disabled);
-                    return (
-                      <div key={account.id} className={`quota-account is-${accountStatus} ${isDisabled ? 'is-disabled-account' : ''}`}>
-                        <div className="quota-account-head">
-                          <div className="quota-account-title">
-                            <span>{account.label || 'Codex'}</span>
-                            <small>{plan}</small>
-                            {isDisabled ? <small className="quota-disabled-tag">已停用</small> : null}
-                          </div>
-                          {switchable ? (
-                            <button
-                              type="button"
-                              className={`quota-account-switch ${isCurrentAccount ? 'is-current' : ''}`}
-                              disabled={isCurrentAccount || Boolean(quotaSwitchingAccountId)}
-                              onClick={() => switchCodexQuotaAccount(account.id)}
-                            >
-                              {isSwitchingAccount ? '切换中' : isCurrentAccount ? '当前' : '切换'}
-                            </button>
-                          ) : null}
-                        </div>
-                        {windows.length ? (
-                          <div className="quota-window-list">
-                            {windows.map((quotaWindow) => {
-                              const percent = quotaRemainingPercent(quotaWindow);
-                              const resetText = formatQuotaReset(quotaWindow);
-                              return (
-                                <div
-                                  key={quotaWindow.id}
-                                  className={`quota-window ${quotaToneClass(percent)}`}
-                                  style={{ '--quota-percent': `${percent ?? 0}%` }}
-                                >
-                                  <div className="quota-window-meta">
-                                    <span>{quotaWindow.label}</span>
-                                    <strong>{formatQuotaPercent(quotaWindow)}</strong>
-                                  </div>
-                                  <div className="quota-bar">
-                                    <span />
-                                  </div>
-                                  {resetText ? <div className="quota-window-reset">{resetText}</div> : null}
+
+                {!quotaError && quotaAccount ? (() => {
+                  const windows = Array.isArray(quotaAccount.windows) ? quotaAccount.windows : [];
+                  const accountStatus = quotaAccount.status || 'ok';
+                  return (
+                    <div className={`quota-account quota-account-single is-${accountStatus}`}>
+                      {windows.length ? (
+                        <div className="quota-window-list">
+                          {windows.map((quotaWindow) => {
+                            const percent = quotaRemainingPercent(quotaWindow);
+                            const resetText = formatQuotaReset(quotaWindow);
+                            return (
+                              <div
+                                key={quotaWindow.id}
+                                className={`quota-window ${quotaToneClass(percent)}`}
+                                style={{ '--quota-percent': `${percent ?? 0}%` }}
+                              >
+                                <div className="quota-window-meta">
+                                  <span>{quotaWindow.label}</span>
+                                  <strong>{formatQuotaPercent(quotaWindow)}</strong>
                                 </div>
-                              );
-                            })}
-                          </div>
-                        ) : (
-                          <button
-                            type="button"
-                            className="quota-account-message"
-                            onClick={accountStatus === 'failed' ? refreshCodexQuota : undefined}
-                          >
-                            {account.error || (accountStatus === 'disabled' ? '已停用，无法查询额度' : '查询失败，点击刷新重试')}
-                          </button>
-                        )}
-                      </div>
-                    );
-                  })
-                ) : null}
-                {!quotaLoading && !quotaError && quotaLoaded && !quotaAccounts.length ? (
-                  <div className="quota-empty">暂无 Codex 凭证</div>
+                                <div className="quota-bar">
+                                  <span />
+                                </div>
+                                {resetText ? <div className="quota-window-reset">{resetText}</div> : null}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          className="quota-account-message"
+                          onClick={accountStatus === 'failed' ? refreshCodexQuota : undefined}
+                        >
+                          {quotaAccount.error || '查询失败，点击刷新重试'}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })() : null}
+
+                {!quotaLoading && !quotaError && quotaLoaded && !quotaAccount ? (
+                  <div className="quota-empty">暂无 ChatGPT 凭证</div>
                 ) : null}
               </div>
-            ) : null}
-                </div>
-              </div>
-            ) : null}
-          </div>
+            </>
           ) : null}
 
           <div className={`tool-group ${toolGroupExpanded.ops ? 'is-expanded' : ''}`}>

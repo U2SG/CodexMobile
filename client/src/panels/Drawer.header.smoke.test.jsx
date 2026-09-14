@@ -12,6 +12,7 @@ let root;
 
 function renderDrawer(overrides = {}) {
   const onNewConversation = vi.fn();
+  const onSync = vi.fn();
   const props = {
     open: true,
     onClose: vi.fn(),
@@ -37,7 +38,7 @@ function renderDrawer(overrides = {}) {
     onDeletePinFolder: vi.fn(),
     onToggleFolderCollapsed: vi.fn(),
     onNewConversation,
-    onSync: vi.fn(),
+    onSync,
     onOpenGit: vi.fn(),
     onOpenNotifications: vi.fn(),
     onOpenActivity: vi.fn(),
@@ -53,7 +54,7 @@ function renderDrawer(overrides = {}) {
     ...overrides
   };
   root.render(<Drawer {...props} />);
-  return { props, onNewConversation };
+  return { props, onNewConversation, onSync };
 }
 
 beforeEach(() => {
@@ -91,4 +92,23 @@ test('drawer places search and compact new-conversation action on one toolbar ro
 
   await act(async () => newButton.click());
   expect(rendered.onNewConversation).toHaveBeenCalledTimes(1);
+});
+
+test('codex drawer exposes one direct conversation sync button and one single-account quota refresh', async () => {
+  let rendered;
+  await act(async () => {
+    rendered = renderDrawer();
+  });
+
+  const syncButtons = [...container.querySelectorAll('button')].filter((button) => button.textContent.includes('同步对话'));
+  const quotaButtons = [...container.querySelectorAll('button')].filter((button) => button.textContent.includes('刷新额度'));
+
+  expect(syncButtons).toHaveLength(1);
+  expect(quotaButtons).toHaveLength(1);
+  expect(container.textContent).not.toContain('同步与额度');
+  expect(container.querySelector('.quota-account-switch')).toBeNull();
+  expect(container.querySelector('.quota-toggle')).toBeNull();
+
+  await act(async () => syncButtons[0].click());
+  expect(rendered.onSync).toHaveBeenCalledTimes(1);
 });

@@ -1,7 +1,7 @@
-// Codex quota query + account switch routes. Codex-only endpoints — the
-// Claude route has no equivalent (quota lives inside Claude Code CLI, not
-// surfaced to the mobile client). Extracted from server/index.js (Batch G
-// R25).
+// Codex quota routes. The mobile UI uses a single current ChatGPT account;
+// the account-switch endpoint remains only for backward compatibility with
+// older clients. Claude has no equivalent quota surface. Extracted from
+// server/index.js (Batch G R25).
 //
 // Inputs (factory):
 //   getCodexQuota       — from ./codex-quota.js
