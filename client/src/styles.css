@@ -7966,6 +7966,66 @@ button {
     background: transparent;
   }
 
+  .turn-card {
+    gap: 6px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  [data-theme="dark"] .turn-card {
+    border-color: transparent;
+    background: transparent;
+  }
+
+  .turn-card-head {
+    gap: 4px;
+    min-height: 32px;
+    padding: 0 2px;
+  }
+
+  .turn-card-author {
+    color: var(--muted);
+    font-size: var(--fs-caption);
+    font-weight: 650;
+    letter-spacing: 0.02em;
+  }
+
+  .turn-process-toggle {
+    min-height: var(--touch);
+    padding-inline: 4px;
+    color: var(--muted);
+  }
+
+  .turn-process-toggle:hover,
+  .turn-process-toggle:focus-visible,
+  [data-theme="dark"] .turn-process-toggle:hover,
+  [data-theme="dark"] .turn-process-toggle:focus-visible {
+    background: transparent;
+  }
+
+  .turn-process-body {
+    gap: 5px;
+    margin-left: 2px;
+    padding: 2px 0 2px 10px;
+    border-left-color: rgba(17, 17, 17, 0.08);
+  }
+
+  [data-theme="dark"] .turn-process-body {
+    border-left-color: rgba(255, 255, 255, 0.12);
+  }
+
+  .turn-conclusion {
+    padding-inline: 2px;
+  }
+
+  .turn-card .message-actions {
+    margin-top: 3px;
+    padding-inline: 2px;
+  }
+
   .message-content,
   .message-row.is-user .message-content {
     font-size: var(--fs-body);
