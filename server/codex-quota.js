@@ -588,7 +588,7 @@ function baseAccountFromAuthEntry(entry) {
     plan: normalizePlan(authEntryPlan(entry), planFromFileName(name)),
     disabled,
     active: !disabled,
-    switchable: true,
+    switchable: false,
     status: 'ok',
     windows: []
   };
@@ -635,9 +635,8 @@ async function quotaForManagementEntry(baseUrl, managementKey, entry) {
     return {
       ...account,
       plan: normalizePlan(usage?.plan_type ?? usage?.planType, account.plan),
-      // Always expose quota; account.disabled stays as a separate flag so the
-      // UI can render windows + "已停用" badge side by side, letting the user
-      // see which account has headroom before deciding to switch.
+      // The mobile UI is single-account now. Keep `disabled` only as
+      // diagnostic metadata for the fallback case where no enabled credential exists.
       status: 'ok',
       windows: extractQuotaWindows(usage)
     };
@@ -656,6 +655,11 @@ async function listCodexManagementEntries(baseUrl, managementKey) {
     .filter(isCodexAuthEntry);
 }
 
+export function selectCurrentCodexAuthEntry(entries = []) {
+  const list = Array.isArray(entries) ? entries : [];
+  return list.find((entry) => !entry?.disabled) || list[0] || null;
+}
+
 async function getCodexQuotaFromManagement() {
   const managementKey = await resolveManagementKey();
   if (!managementKey) {
@@ -663,18 +667,17 @@ async function getCodexQuotaFromManagement() {
   }
   const baseUrl = await resolveManagementBaseUrl();
   const entries = await listCodexManagementEntries(baseUrl, managementKey);
-  const accounts = await Promise.all(
-    entries.map((entry) => quotaForManagementEntry(baseUrl, managementKey, entry))
-  );
-  const activeCount = accounts.filter((account) => !account.disabled).length;
+  const currentEntry = selectCurrentCodexAuthEntry(entries);
+  const account = currentEntry
+    ? await quotaForManagementEntry(baseUrl, managementKey, currentEntry)
+    : null;
   return {
     provider: 'cliproxyapi',
     source: 'cliproxyapi-management',
-    switchingAvailable: true,
-    accounts: accounts.map((account) => ({
-      ...account,
-      active: activeCount === 1 && !account.disabled
-    }))
+    switchingAvailable: false,
+    account,
+    accounts: account ? [account] : [],
+    accountCount: entries.length
   };
 }
 
@@ -753,27 +756,44 @@ export async function getCodexQuota() {
     throw error;
   }
 
-  const accounts = await Promise.all(
-    files.map(async (fileName) => {
-      try {
-        return await quotaForFile(authDir, fileName);
-      } catch {
-        return {
-          id: safeId(fileName),
-          label: maskAccount(fileName.replace(/^codex-/, '').replace(/\.json$/, '')),
-          plan: normalizePlan(planFromFileName(fileName)),
-          disabled: false,
-          status: 'failed',
-          error: '凭证读取失败',
-          windows: []
-        };
+  let currentFile = files[0] || '';
+  for (const fileName of files) {
+    try {
+      const credential = await readJsonFile(path.join(authDir, fileName));
+      if (!credential.disabled) {
+        currentFile = fileName;
+        break;
       }
-    })
-  );
+    } catch {
+      // Keep looking for the one usable credential.
+    }
+  }
+
+  let account = null;
+  if (currentFile) {
+    try {
+      account = await quotaForFile(authDir, currentFile);
+    } catch {
+      account = {
+        id: safeId(currentFile),
+        label: maskAccount(currentFile.replace(/^codex-/, '').replace(/\.json$/, '')),
+        plan: normalizePlan(planFromFileName(currentFile)),
+        disabled: false,
+        active: true,
+        switchable: false,
+        status: 'failed',
+        error: '凭证读取失败',
+        windows: []
+      };
+    }
+  }
 
   return {
     provider: 'cliproxyapi',
+    source: 'cliproxyapi-files',
     switchingAvailable: false,
-    accounts
+    account,
+    accounts: account ? [account] : [],
+    accountCount: files.length
   };
 }

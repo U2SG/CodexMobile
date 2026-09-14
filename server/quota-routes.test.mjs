@@ -29,8 +29,16 @@ function startTestServer(routes) {
 
 beforeEach(async () => {
   calls = { getQuota: 0, switch: [] };
-  getCodexQuotaImpl = async () => ({ accounts: [{ id: 'a', windows: [] }], switchingAvailable: true });
-  switchCodexAccountImpl = async (id) => ({ accounts: [{ id, active: true }], switchingAvailable: true });
+  getCodexQuotaImpl = async () => ({
+    account: { id: 'a', active: true, switchable: false, windows: [] },
+    accounts: [{ id: 'a', active: true, switchable: false, windows: [] }],
+    switchingAvailable: false
+  });
+  switchCodexAccountImpl = async (id) => ({
+    account: { id, active: true, switchable: false, windows: [] },
+    accounts: [{ id, active: true, switchable: false, windows: [] }],
+    switchingAvailable: false
+  });
   const routes = createQuotaRoutes({
     getCodexQuota: async () => {
       calls.getQuota += 1;
@@ -60,7 +68,8 @@ test('GET /api/quotas/codex returns the quota payload', async () => {
   const res = await fetch(`${baseUrl}/api/quotas/codex`);
   assert.equal(res.status, 200);
   const body = await res.json();
-  assert.equal(body.switchingAvailable, true);
+  assert.equal(body.switchingAvailable, false);
+  assert.equal(body.account.id, 'a');
   assert.equal(body.accounts.length, 1);
   assert.equal(calls.getQuota, 1);
 });

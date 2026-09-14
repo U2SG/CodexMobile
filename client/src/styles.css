@@ -1701,9 +1701,35 @@ button {
   background: rgba(255, 255, 255, 0.72);
 }
 
+.quota-single {
+  display: grid;
+  gap: 3px;
+}
+
+.drawer-sync-action,
+.quota-single-refresh {
+  min-height: var(--touch);
+  padding-inline: 2px;
+  border: 0;
+  border-radius: 0;
+}
+
+.quota-account-single {
+  padding: 4px 2px 6px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
 [data-theme="dark"] .quota-account {
   border-color: #303030;
   background: #222222;
+}
+
+[data-theme="dark"] .quota-account-single {
+  border-color: transparent;
+  background: transparent;
 }
 
 .quota-account-head {
