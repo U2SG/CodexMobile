@@ -503,6 +503,11 @@ async function readClaudeSessionFacts(filePath) {
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
 
   let sessionId = path.basename(filePath, '.jsonl');
+  // Claude Code stamps every row with the shell's current directory, so `cwd`
+  // drifts whenever the session `cd`s into another repo. The first row's cwd
+  // is the directory the session was opened in (the CLI's own project folder);
+  // the last one is where the shell currently sits.
+  let firstCwd = null;
   let cwd = null;
   let model = null;
   let lastTimestamp = null;
@@ -520,6 +525,7 @@ async function readClaudeSessionFacts(filePath) {
         sessionId = entry.sessionId || entry.session_id;
       }
       if (entry.cwd && typeof entry.cwd === 'string') {
+        firstCwd ||= entry.cwd;
         cwd = entry.cwd;
       }
       if (entry.message?.model) {
@@ -551,6 +557,7 @@ async function readClaudeSessionFacts(filePath) {
   return {
     sessionId,
     cwd,
+    firstCwd,
     model,
     lastTimestamp,
     lastUserMessage: lastUserMessage.slice(0, SESSION_PREVIEW_CHARS),
@@ -563,7 +570,7 @@ function claudeSessionFromFacts(facts, filePath, mobileSessionIndex, worktreeRoo
   if (!facts) {
     return null;
   }
-  const { sessionId, cwd, model, lastTimestamp, lastUserMessage, firstSubstantiveMessage, messageCount } = facts;
+  const { sessionId, cwd, firstCwd, model, lastTimestamp, lastUserMessage, firstSubstantiveMessage, messageCount } = facts;
   const mobileSession = mobileSessionIndex.get(sessionId);
   const mobileMessages = Array.isArray(mobileSession?.messages) ? mobileSession.messages : [];
   const updatedAt =
@@ -571,13 +578,16 @@ function claudeSessionFromFacts(facts, filePath, mobileSessionIndex, worktreeRoo
       ? mobileSession.updatedAt
       : lastTimestamp;
 
-  const groupRoot = resolveProjectRoot(cwd, worktreeRootCache);
+  // Group by the directory the session was opened in, not wherever the shell
+  // last `cd`ed — otherwise a session hops between drawer projects mid-run.
+  const groupRoot = resolveProjectRoot(firstCwd || cwd, worktreeRootCache);
 
   return {
     id: sessionId,
     cwd: path.resolve(cwd),
     // groupRoot maps a git worktree back to its main repo for project grouping;
-    // it equals the resolved cwd for plain dirs. cwd above stays the worktree.
+    // it equals the resolved first cwd for plain dirs. cwd above stays the
+    // shell's current directory so resume lands where the session left off.
     groupRoot,
     projectId: projectIdFor(groupRoot),
     // Fall back to the first substantive message, then "新对话" — never the raw
@@ -732,7 +742,8 @@ function codexSessionFromFacts(facts, filePath, sessionIndex, mobileSessionIndex
 // The file-derived facts only change when the file does, so memoize them by
 // (path, mtime, size) and re-apply the cheap index/mobile/worktree merge every
 // time. The map is persisted so a restart doesn't pay the cold price again.
-const SESSION_FACTS_CACHE_VERSION = 1;
+// v2: Claude facts carry firstCwd — older entries must be re-read.
+const SESSION_FACTS_CACHE_VERSION = 2;
 const SESSION_PREVIEW_CHARS = 200;
 const STATE_DIR = path.join(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'), '.codexmobile', 'state');
 const sessionFactsCache = new Map();
@@ -813,6 +824,11 @@ function pruneSessionFactsCache(livePaths) {
 export async function parseSessionMetadata(filePath, sessionIndex, mobileSessionIndex, worktreeRootCache = new Map()) {
   const facts = await readCodexSessionFacts(filePath);
   return codexSessionFromFacts(facts, filePath, sessionIndex, mobileSessionIndex, worktreeRootCache);
+}
+
+export async function parseClaudeSessionMetadata(filePath, mobileSessionIndex = new Map(), worktreeRootCache = new Map()) {
+  const facts = await readClaudeSessionFacts(filePath);
+  return claudeSessionFromFacts(facts, filePath, mobileSessionIndex, worktreeRootCache);
 }
 
 function upsertProject(projectMap, projectPath, trustLevel = null, label = null) {

@@ -39,7 +39,7 @@ test('session facts cache persists across refreshes and re-reads changed rollout
   assert.equal(getSession('thread-1')?.title, '第一版问题');
   assert.ok(fs.existsSync(cacheFile), 'facts cache should be persisted');
   const cached = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
-  assert.equal(cached.version, 1);
+  assert.equal(cached.version, 2);
   assert.equal(Object.keys(cached.entries).length, 1);
 
   // Same content, untouched file: served from cache, same answer.

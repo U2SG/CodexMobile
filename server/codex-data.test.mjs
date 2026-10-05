@@ -9,7 +9,8 @@ import {
   parseSessionMetadata,
   upsertLatestSession,
   sanitizeVisibleUserMessage,
-  resolveProjectRoot
+  resolveProjectRoot,
+  parseClaudeSessionMetadata
 } from './codex-data.js';
 
 function makeSession({ id, projectId, updatedAt, filePath, messageCount }) {
@@ -378,6 +379,44 @@ test('resolveProjectRoot groups removed worktrees back under their repo', () => 
     const src = path.join(repo, 'src');
     fs.mkdirSync(src, { recursive: true });
     assert.equal(resolveProjectRoot(src, new Map()), src);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('parseClaudeSessionMetadata groups by the opening cwd even after the shell cds elsewhere', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codexmobile-claude-cwd-drift-'));
+  try {
+    const opened = path.join(dir, 'workspace');
+    const elsewhere = path.join(dir, 'workspace', 'svc', 'worktree-a');
+    fs.mkdirSync(elsewhere, { recursive: true });
+    const filePath = writeRollout(dir, 'drift.jsonl', [
+      { type: 'attachment', cwd: opened, sessionId: 'drift-session', timestamp: '2026-10-05T01:00:00.000Z' },
+      {
+        type: 'user',
+        cwd: opened,
+        sessionId: 'drift-session',
+        timestamp: '2026-10-05T01:00:01.000Z',
+        message: { role: 'user', content: '看一下这个服务' }
+      },
+      { type: 'attachment', cwd: elsewhere, sessionId: 'drift-session', timestamp: '2026-10-05T01:00:02.000Z' },
+      {
+        type: 'user',
+        cwd: elsewhere,
+        sessionId: 'drift-session',
+        timestamp: '2026-10-05T01:00:03.000Z',
+        message: { role: 'user', content: '继续' }
+      }
+    ]);
+
+    const session = await parseClaudeSessionMetadata(filePath);
+
+    assert.equal(session.id, 'drift-session');
+    // Drawer grouping follows where the session was opened...
+    assert.equal(session.groupRoot, path.resolve(opened));
+    // ...while cwd tracks the shell so resume lands where it left off.
+    assert.equal(session.cwd, path.resolve(elsewhere));
+    assert.equal(session.title, '看一下这个服务');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
