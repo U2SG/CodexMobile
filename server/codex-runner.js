@@ -13,6 +13,7 @@ import { readCodexModels } from './codex-config.js';
 import { claudeAssistantMessageId, createClaudePartialStreamState, processClaudePartialStreamEvent } from './claude-stream.js';
 import { buildClaudeSkillsAppendix } from './claude-skills.js';
 import { getClaudeHookSecret } from './approval-pool.js';
+import { killProcessTree } from './process-tree.js';
 
 const CLAUDE_APPROVAL_HOOK_PATH = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -1062,7 +1063,9 @@ async function runClaudeTurn({ sessionId, draftSessionId, projectPath, message, 
     });
 
     child.stderr.on('data', (chunk) => {
+      // Only the tail is ever reported; a chatty CLI must not grow this unbounded.
       stderr += chunk.toString();
+      if (stderr.length > 64_000) stderr = stderr.slice(-32_000);
     });
     child.stdin.end(promptInput, 'utf8');
 
@@ -1479,18 +1482,23 @@ function runMatchesIdentifier(run, identifier) {
   );
 }
 
-function terminateRunProcess(run) {
+function terminateRunProcess(run, options) {
   if (!run?.process || run.process.killed) {
     return;
   }
-  if (process.platform === 'win32' && run.process.pid) {
-    spawn('taskkill.exe', ['/pid', String(run.process.pid), '/t', '/f'], {
-      windowsHide: true,
-      stdio: 'ignore'
-    }).on('error', () => null);
-    return;
+  killProcessTree(run.process, options);
+}
+
+// Shutdown path: end every live CLI child synchronously so a restart does not
+// leave claude/codex processes holding session locks.
+export function terminateAllRunProcesses() {
+  for (const run of activeRuns.values()) {
+    try {
+      terminateRunProcess(run, { sync: true });
+    } catch {
+      // best effort during shutdown
+    }
   }
-  run.process.kill('SIGTERM');
 }
 
 export function abortCodexTurn(identifier) {

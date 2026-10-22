@@ -31,7 +31,7 @@ import {
   renameSession
 } from './codex-data.js';
 import { getCodexQuota, switchCodexAccount } from './codex-quota.js';
-import { abortCodexTurn, getActiveRuns as getCodexActiveRuns, runCodexTurn } from './codex-runner.js';
+import { abortCodexTurn, getActiveRuns as getCodexActiveRuns, runCodexTurn, terminateAllRunProcesses } from './codex-runner.js';
 import { defaultProvider, defaultModel, defaultModelShort, isClaudeMode } from './agent-mode.js';
 import { liveEnv } from './env-file.js';
 import { agentCapabilities, currentAgentMatchesSession } from './agent-capabilities.js';
@@ -109,14 +109,36 @@ process.on('unhandledRejection', (reason) => {
     return;
   }
   console.error('[fatal] unhandledRejection:', reason);
+  terminateAllRunProcesses();
   process.exit(1);
 });
+// Ctrl+C / console close / service stop: take the CLI children down with us
+// so they do not linger holding session locks. (A hard TerminateProcess from
+// Stop-Process cannot be intercepted; tree kills on abort cover that path.)
+let shuttingDown = false;
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[shutdown] ${signal}: stopping child processes`);
+  terminateAllRunProcesses();
+  try {
+    const { closeAllAppServerClients } = await import('./codex-app-server.js');
+    closeAllAppServerClients();
+  } catch {
+    // best effort
+  }
+  process.exit(0);
+}
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGBREAK', 'SIGHUP']) {
+  process.on(signal, () => shutdown(signal));
+}
 process.on('uncaughtException', (err) => {
   if (isAbortLike(err)) {
     console.warn('[abort] swallowed uncaught AbortError:', err?.message || err);
     return;
   }
   console.error('[fatal] uncaughtException:', err);
+  terminateAllRunProcesses();
   process.exit(1);
 });
 
@@ -182,7 +204,10 @@ bridgeStatus.onChange((status) => {
 
 
 threadTracker.onActivity(({ conversationId, change }) => {
-  console.log(`[chat] IPC activity session=${conversationId} change.type=${change?.type || 'unknown'}`);
+  // One line per desktop IPC frame was ~98% of server.out.log; debug only.
+  if (process.env.CODEXMOBILE_DEBUG_IPC === '1') {
+    console.log(`[chat] IPC activity session=${conversationId} change.type=${change?.type || 'unknown'}`);
+  }
 });
 
 threadTracker.start().catch((error) => {

@@ -55,6 +55,18 @@ function childEnv() {
   return env;
 }
 
+// Logs append forever otherwise; keep one previous generation per file.
+const LOG_ROTATE_BYTES = 5 * 1024 * 1024;
+for (const logPath of [outPath, errPath]) {
+  try {
+    if (fs.statSync(logPath).size > LOG_ROTATE_BYTES) {
+      fs.renameSync(logPath, `${logPath}.1`);
+    }
+  } catch {
+    // missing log, or locked by a still-running server: keep appending
+  }
+}
+
 const out = fs.openSync(outPath, 'a');
 const err = fs.openSync(errPath, 'a');
 try {

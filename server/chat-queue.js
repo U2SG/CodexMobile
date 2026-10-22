@@ -158,8 +158,17 @@ export function createChatQueue({ maxRecentTurns = DEFAULT_MAX_RECENT_TURNS } = 
     return { queueKey, state: getConversationQueue(queueKey) };
   }
 
+  // Read-only: polling GET /api/chat/queue used to mint a queue state (and,
+  // with no ids, a fresh random key) per call that was never removed.
   function listQueue(query = {}) {
-    const { state } = queueForRequest(query);
+    const ids = [query.sessionId, query.draftSessionId]
+      .map((id) => String(id || '').trim())
+      .filter(Boolean);
+    const queueKey = ids.map((id) => sessionQueueKeys.get(id)).find(Boolean) || ids.find((id) => conversationQueues.has(id));
+    const state = queueKey ? conversationQueues.get(queueKey) : null;
+    if (!state) {
+      return { drafts: [], running: false };
+    }
     return {
       drafts: state.jobs.map(serializeQueueJob),
       running: state.running

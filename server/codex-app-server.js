@@ -3,6 +3,7 @@ import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
+import { killProcessTree } from './process-tree.js';
 
 const DEFAULT_CODEX_APP_BINARY = '/Applications/Codex.app/Contents/Resources/codex';
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
@@ -224,6 +225,7 @@ export class CodexAppServerClient {
       windowsHide: true
     });
 
+    liveClients.add(this);
     this.readline = readline.createInterface({
       input: this.child.stdout,
       crlfDelay: Infinity
@@ -242,6 +244,7 @@ export class CodexAppServerClient {
       this.resolveClosed?.({ code: null, signal: null, error });
     });
     this.child.on('close', (code, signal) => {
+      liveClients.delete(this);
       const error = responseError(
         this.stderr.trim() || `Codex app-server exited with ${code ?? signal ?? 'unknown status'}`
       );
@@ -355,13 +358,28 @@ export class CodexAppServerClient {
     }
   }
 
-  close() {
+  close(options) {
     if (this.readline) {
       this.readline.close();
       this.readline = null;
     }
     if (this.child && !this.child.killed) {
-      this.child.kill();
+      killProcessTree(this.child, options);
+    }
+    liveClients.delete(this);
+  }
+}
+
+// Every started client, so shutdown can reap app-server children that a
+// turn or desktop-thread read had not closed yet.
+const liveClients = new Set();
+
+export function closeAllAppServerClients() {
+  for (const client of [...liveClients]) {
+    try {
+      client.close({ sync: true });
+    } catch {
+      // best effort during shutdown
     }
   }
 }
