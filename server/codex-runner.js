@@ -12,6 +12,7 @@ import { recordClaudeResolvedModel } from './claude-config.js';
 import { readCodexModels } from './codex-config.js';
 import { claudeAssistantMessageId, createClaudePartialStreamState, processClaudePartialStreamEvent } from './claude-stream.js';
 import { buildClaudeSkillsAppendix } from './claude-skills.js';
+import { claudeSdkApprovalOptions } from './claude-sdk-approvals.js';
 import { getClaudeHookSecret } from './approval-pool.js';
 import { killProcessTree } from './process-tree.js';
 import { shellSpawnArgs } from './shell-command.js';
@@ -720,6 +721,20 @@ function claudeHooksEnabled() {
   return process.env.CODEXMOBILE_CLAUDE_USE_HOOKS === '1';
 }
 
+// Claude turns run through the official Agent SDK by default. Set
+// CODEXMOBILE_CLAUDE_RUNTIME=cli to fall back to spawning `claude -p`. A
+// deployment whose node_modules predate the dependency also falls back
+// (loudly, once) instead of failing every Claude turn.
+let claudeSdkModule = null;
+async function loadClaudeSdk() {
+  if (process.env.CODEXMOBILE_CLAUDE_RUNTIME === 'cli') return null;
+  claudeSdkModule ||= import('@anthropic-ai/claude-agent-sdk').catch((error) => {
+    console.warn(`[claude] Agent SDK unavailable, using the CLI runtime (run npm install): ${error.message}`);
+    return null;
+  });
+  return claudeSdkModule;
+}
+
 function mapClaudePermissionMode(permissionMode) {
   if (permissionMode === 'bypassPermissions') {
     // Full access: the PreToolUse hook stays installed (AskUserQuestion still
@@ -970,12 +985,16 @@ async function runClaudeTurn({ sessionId, draftSessionId, projectPath, message, 
       '--model',
       requestedClaudeModel
     ];
+    // The temp files below only exist for the CLI runtime; the SDK takes the
+    // skills text and in-process approval hooks directly.
+    const claudeSdk = await loadClaudeSdk();
+    const useSdk = Boolean(claudeSdk);
     // turnId can come from the client; keep it to a plain file-name token.
     const tempFileTag = String(turnId).replace(/[^\w-]/g, '_');
     // Skill bodies are multi-line markdown: as a command-line arg cmd.exe cut
     // them at the first newline and parsed `| > &` inside them. A file path
     // survives intact (same reason the settings below go through a file).
-    if (skillsAppendix) {
+    if (skillsAppendix && !useSdk) {
       claudeSkillsTempPath = path.join(os.tmpdir(), `codexmobile-claude-skills-${tempFileTag}.md`);
       await fs.writeFile(claudeSkillsTempPath, skillsAppendix, 'utf8');
       args.push('--append-system-prompt-file', claudeSkillsTempPath);
@@ -990,7 +1009,7 @@ async function runClaudeTurn({ sessionId, draftSessionId, projectPath, message, 
     // quotes and produces "Invalid JSON provided to --settings". A path arg
     // survives that round trip intact.
     const hookUrl = process.env.CODEXMOBILE_INTERNAL_HOOK_URL || '';
-    if (claudeHooksEnabled() && hookUrl) {
+    if (claudeHooksEnabled() && hookUrl && !useSdk) {
       claudeSettingsTempPath = path.join(
         os.tmpdir(),
         `codexmobile-claude-settings-${tempFileTag}.json`
@@ -1002,7 +1021,8 @@ async function runClaudeTurn({ sessionId, draftSessionId, projectPath, message, 
     if (normalizedReasoningEffort) {
       args.push('--effort', normalizedReasoningEffort);
     }
-    if (sessionId || (draftSessionId && !String(draftSessionId).startsWith('draft-'))) {
+    const resumingSession = Boolean(sessionId || (draftSessionId && !String(draftSessionId).startsWith('draft-')));
+    if (resumingSession) {
       args.push('--resume', currentSessionId);
     } else {
       args.push('--session-id', currentSessionId);
@@ -1021,82 +1041,10 @@ async function runClaudeTurn({ sessionId, draftSessionId, projectPath, message, 
     let stderr = '';
     let exitCode = null;
 
-   while (true) {
-    attemptNumber++;
-    stderr = '';
-    exitCode = null;
-    let shouldRetry = false;
-
     let releaseSpawnGate = null;
-    try {
-    const claudeEnv = { ...process.env };
-    if (claudeHooksEnabled() && hookUrl) {
-      claudeEnv.CODEXMOBILE_HOOK_URL = hookUrl;
-      claudeEnv.CODEXMOBILE_HOOK_SECRET = getClaudeHookSecret();
-      claudeEnv.CODEXMOBILE_TURN_ID = turnId;
-      claudeEnv.CODEXMOBILE_SESSION_ID = currentSessionId;
-    }
-    releaseSpawnGate = await acquireClaudeSpawnGate();
-    const launch = shellSpawnArgs(claudeExecutable(), claudeSpawnArgs(args));
-    const child = spawn(launch.command, launch.args, {
-      cwd: workingDirectory,
-      env: claudeEnv,
-      windowsHide: true,
-      shell: launch.shell,
-      signal: abortController.signal
-    });
-    // Release the gate after the child shows it has finished startup. First
-    // stdout chunk is the cleanest signal (claude has emitted its init JSON);
-    // close/error covers the failure paths; a 2s timeout caps how long we
-    // ever hold the gate even if claude is unusually slow to produce stdout.
-    const releaseGateOnce = () => {
-      if (releaseSpawnGate) {
-        const fn = releaseSpawnGate;
-        releaseSpawnGate = null;
-        fn();
-      }
-    };
-    const gateTimeout = setTimeout(releaseGateOnce, 2000);
-    const clearAndRelease = () => { clearTimeout(gateTimeout); releaseGateOnce(); };
-    child.stdout.once('data', clearAndRelease);
-    child.once('close', clearAndRelease);
-    child.once('error', clearAndRelease);
-    child.on('error', (err) => {
-      if (err?.name === 'AbortError' || err?.code === 'ABORT_ERR') {
-        return;
-      }
-      console.error('[claude] child error:', err.message || err);
-    });
-    run.process = child;
-    const exitPromise = new Promise((resolve, reject) => {
-      child.once('error', reject);
-      child.once('close', resolve);
-    });
-
-    child.stderr.on('data', (chunk) => {
-      // Only the tail is ever reported; a chatty CLI must not grow this unbounded.
-      stderr += chunk.toString();
-      if (stderr.length > 64_000) stderr = stderr.slice(-32_000);
-    });
-    child.stdin.end(promptInput, 'utf8');
-
-    const rl = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
-    const partialStreamState = createClaudePartialStreamState();
-    for await (const line of rl) {
-      if (run.status === 'aborted') {
-        break;
-      }
-      const trimmed = line.trim();
-      if (!trimmed || !trimmed.startsWith('{')) {
-        continue;
-      }
-      let event;
-      try {
-        event = JSON.parse(trimmed);
-      } catch {
-        continue;
-      }
-
+    // Shared by both runtimes: the Agent SDK yields the same message shapes the
+    // CLI prints with --output-format=stream-json.
+    const handleClaudeEvent = async (event, partialStreamState) => {
       if (event.type === 'stream_event') {
         processClaudePartialStreamEvent(event, partialStreamState, emit, {
           sessionId: currentSessionId,
@@ -1106,7 +1054,7 @@ async function runClaudeTurn({ sessionId, draftSessionId, projectPath, message, 
         if (partialStreamState.hadPartialText) {
           state.hadAssistantText = true;
         }
-        continue;
+        return;
       }
 
       if (event.type === 'assistant') {
@@ -1226,9 +1174,166 @@ async function runClaudeTurn({ sessionId, draftSessionId, projectPath, message, 
           label: `Claude Code ${resolvedModel || requestedClaudeModel}`
         });
       }
-    }
+    };
 
-    exitCode = await exitPromise;
+    const runCliAttempt = async () => {
+      const claudeEnv = { ...process.env };
+      if (claudeHooksEnabled() && hookUrl) {
+        claudeEnv.CODEXMOBILE_HOOK_URL = hookUrl;
+        claudeEnv.CODEXMOBILE_HOOK_SECRET = getClaudeHookSecret();
+        claudeEnv.CODEXMOBILE_TURN_ID = turnId;
+        claudeEnv.CODEXMOBILE_SESSION_ID = currentSessionId;
+      }
+      releaseSpawnGate = await acquireClaudeSpawnGate();
+      const launch = shellSpawnArgs(claudeExecutable(), claudeSpawnArgs(args));
+      const child = spawn(launch.command, launch.args, {
+        cwd: workingDirectory,
+        env: claudeEnv,
+        windowsHide: true,
+        shell: launch.shell,
+        signal: abortController.signal
+      });
+      // Release the gate after the child shows it has finished startup. First
+      // stdout chunk is the cleanest signal (claude has emitted its init JSON);
+      // close/error covers the failure paths; a 2s timeout caps how long we
+      // ever hold the gate even if claude is unusually slow to produce stdout.
+      const releaseGateOnce = () => {
+        if (releaseSpawnGate) {
+          const fn = releaseSpawnGate;
+          releaseSpawnGate = null;
+          fn();
+        }
+      };
+      const gateTimeout = setTimeout(releaseGateOnce, 2000);
+      const clearAndRelease = () => { clearTimeout(gateTimeout); releaseGateOnce(); };
+      child.stdout.once('data', clearAndRelease);
+      child.once('close', clearAndRelease);
+      child.once('error', clearAndRelease);
+      child.on('error', (err) => {
+        if (err?.name === 'AbortError' || err?.code === 'ABORT_ERR') {
+          return;
+        }
+        console.error('[claude] child error:', err.message || err);
+      });
+      run.process = child;
+      const exitPromise = new Promise((resolve, reject) => {
+        child.once('error', reject);
+        child.once('close', resolve);
+      });
+
+      child.stderr.on('data', (chunk) => {
+        // Only the tail is ever reported; a chatty CLI must not grow this unbounded.
+        stderr += chunk.toString();
+        if (stderr.length > 64_000) stderr = stderr.slice(-32_000);
+      });
+      child.stdin.end(promptInput, 'utf8');
+
+      const rl = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
+      const partialStreamState = createClaudePartialStreamState();
+      for await (const line of rl) {
+        if (run.status === 'aborted') {
+          break;
+        }
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith('{')) {
+          continue;
+        }
+        let event;
+        try {
+          event = JSON.parse(trimmed);
+        } catch {
+          continue;
+        }
+
+        await handleClaudeEvent(event, partialStreamState);
+      }
+
+      return exitPromise;
+    };
+
+    const runSdkAttempt = async () => {
+      const { query } = claudeSdk;
+      releaseSpawnGate = await acquireClaudeSpawnGate();
+      const releaseGateOnce = () => {
+        if (releaseSpawnGate) {
+          const fn = releaseSpawnGate;
+          releaseSpawnGate = null;
+          fn();
+        }
+      };
+      const gateTimeout = setTimeout(releaseGateOnce, 2000);
+      const partialStreamState = createClaudePartialStreamState();
+      const approvals = claudeSdkApprovalOptions({
+        enabled: claudeHooksEnabled(),
+        permissionMode,
+        turnId,
+        sessionId: currentSessionId,
+        cwd: workingDirectory,
+        signal: abortController.signal,
+        broadcast: emit
+      });
+      const conversation = query({
+        prompt: promptInput,
+        options: {
+          cwd: workingDirectory,
+          model: requestedClaudeModel,
+          permissionMode: mapClaudePermissionMode(permissionMode),
+          includePartialMessages: true,
+          abortController,
+          ...(resumingSession ? { resume: currentSessionId } : { sessionId: currentSessionId }),
+          ...(normalizedReasoningEffort ? { effort: normalizedReasoningEffort === 'minimal' ? 'low' : normalizedReasoningEffort } : {}),
+          // The SDK's own default is a minimal prompt; `claude -p` uses the
+          // full Claude Code one, so ask for that preset explicitly.
+          systemPrompt: { type: 'preset', preset: 'claude_code', ...(skillsAppendix ? { append: skillsAppendix } : {}) },
+          ...approvals,
+          // Spawn the bundled claude.exe ourselves (no shell) so the child is
+          // registered on the run: abort and shutdown then take the whole
+          // process tree down with taskkill, as on the CLI path.
+          spawnClaudeCodeProcess: ({ command, args: sdkArgs, cwd: childCwd, env, signal }) => {
+            const child = spawn(command, sdkArgs, { cwd: childCwd, env, signal, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+            child.on('error', (err) => {
+              if (err?.name !== 'AbortError' && err?.code !== 'ABORT_ERR') {
+                console.error('[claude] sdk child error:', err.message || err);
+              }
+            });
+            child.stderr.on('data', (chunk) => {
+              stderr += chunk.toString();
+              if (stderr.length > 64_000) stderr = stderr.slice(-32_000);
+            });
+            run.process = child;
+            return child;
+          }
+        }
+      });
+      try {
+        for await (const event of conversation) {
+          clearTimeout(gateTimeout);
+          releaseGateOnce();
+          if (run.status === 'aborted') break;
+          await handleClaudeEvent(event, partialStreamState);
+        }
+      } catch (error) {
+        // An error result was already reported as chat-error; the SDK then
+        // also rejects when the process exits non-zero. Treat that like the
+        // CLI path's non-zero exit after a failed result: nothing more to say.
+        if (state.failed && run.status !== 'aborted') return 1;
+        throw error;
+      } finally {
+        clearTimeout(gateTimeout);
+        releaseGateOnce();
+      }
+      return 0;
+    };
+
+   while (true) {
+    attemptNumber++;
+    stderr = '';
+    exitCode = null;
+    let shouldRetry = false;
+
+    releaseSpawnGate = null;
+    try {
+    exitCode = useSdk ? await runSdkAttempt() : await runCliAttempt();
 
     if (run.status === 'aborted') {
       emit({ type: 'chat-aborted', sessionId: currentSessionId, previousSessionId, turnId });
