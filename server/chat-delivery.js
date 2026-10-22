@@ -248,6 +248,15 @@ export async function sendViaDesktopIpc({
   };
 }
 
+const DEFAULT_TURN_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+
+function turnIdleTimeoutMs() {
+  const raw = process.env.CODEXMOBILE_TURN_IDLE_TIMEOUT_MS;
+  if (raw === undefined || raw === '') return DEFAULT_TURN_IDLE_TIMEOUT_MS;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? value : DEFAULT_TURN_IDLE_TIMEOUT_MS;
+}
+
 export function runQueuedHeadlessChatJob({
   job,
   queueKey,
@@ -264,9 +273,39 @@ export function runQueuedHeadlessChatJob({
   rememberLiveSession,
   emitJobEvent,
   scheduleAutoNameCompletedSession,
+  abortTurn = null,
+  idleTimeoutMs = turnIdleTimeoutMs(),
   onQueueDrained
 }) {
   const metadataUpdates = [];
+  // Watchdog: a runner that goes silent (CLI hung on a hook, network, stdin)
+  // would otherwise hold state.running forever and wedge this conversation's
+  // queue until restart. Any event re-arms it; long silent tool runs are why
+  // the default is generous.
+  // A running tool call (a 40-minute build) is legitimately silent until its
+  // result arrives, so the watchdog only fires when no tool call is open.
+  let idleTimer = null;
+  const openToolCalls = new Set();
+  const armIdleWatchdog = () => {
+    if (!abortTurn || !idleTimeoutMs) return;
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      if (openToolCalls.size) {
+        armIdleWatchdog();
+        return;
+      }
+      console.warn(`[chat] turn ${job.turnId} silent for ${idleTimeoutMs}ms, aborting`);
+      // Not registered yet (still in pre-spawn setup): try again next window
+      // rather than giving up and leaving the queue wedged.
+      if (!abortTurn(job.turnId)) armIdleWatchdog();
+    }, idleTimeoutMs);
+    idleTimer.unref?.();
+  };
+  const trackToolCall = (payload) => {
+    if (payload?.type !== 'activity-update' || !payload.messageId) return;
+    if (payload.status === 'running') openToolCalls.add(payload.messageId);
+    else openToolCalls.delete(payload.messageId);
+  };
   const registeredSessionIds = new Set();
 
   function rememberStartedBackgroundThread(payload) {
@@ -303,6 +342,37 @@ export function runQueuedHeadlessChatJob({
     );
   }
 
+  const onEvent = (payload) => {
+    trackToolCall(payload);
+    armIdleWatchdog();
+    const eventPayload = { ...payload, source: payload?.source || 'headless-local' };
+    if (eventPayload.sessionId) {
+      state.sessionId = eventPayload.sessionId;
+      rememberConversationAlias(queueKey, eventPayload.sessionId);
+    }
+    if (eventPayload.previousSessionId) {
+      rememberConversationAlias(queueKey, eventPayload.previousSessionId);
+    }
+    if (eventPayload.type === 'thread-started' || eventPayload.type === 'chat-started') {
+      rememberStartedBackgroundThread(eventPayload);
+    }
+    if (eventPayload.type === 'chat-error' && registeredSessionIds.size) {
+      // The first turn died — the session file was likely never written, so
+      // the eager registration above would linger as a phantom drawer row
+      // carrying the user's message. Withdraw it; a session that DID reach
+      // disk simply loses a redundant title override.
+      const ids = [...registeredSessionIds];
+      registeredSessionIds.clear();
+      metadataUpdates.push(
+        unregisterMobileSessions(ids).catch((error) => {
+          console.warn('[sessions] Failed to unregister failed thread:', error.message);
+        })
+      );
+    }
+    emitJobEvent(job, eventPayload);
+  };
+
+  armIdleWatchdog();
   runCodexTurn(
     {
       sessionId,
@@ -317,33 +387,7 @@ export function runQueuedHeadlessChatJob({
       collaborationMode: job.collaborationMode,
       turnId: job.turnId
     },
-    (payload) => {
-      const eventPayload = { ...payload, source: payload?.source || 'headless-local' };
-      if (eventPayload.sessionId) {
-        state.sessionId = eventPayload.sessionId;
-        rememberConversationAlias(queueKey, eventPayload.sessionId);
-      }
-      if (eventPayload.previousSessionId) {
-        rememberConversationAlias(queueKey, eventPayload.previousSessionId);
-      }
-      if (eventPayload.type === 'thread-started' || eventPayload.type === 'chat-started') {
-        rememberStartedBackgroundThread(eventPayload);
-      }
-      if (eventPayload.type === 'chat-error' && registeredSessionIds.size) {
-        // The first turn died — the session file was likely never written, so
-        // the eager registration above would linger as a phantom drawer row
-        // carrying the user's message. Withdraw it; a session that DID reach
-        // disk simply loses a redundant title override.
-        const ids = [...registeredSessionIds];
-        registeredSessionIds.clear();
-        metadataUpdates.push(
-          unregisterMobileSessions(ids).catch((error) => {
-            console.warn('[sessions] Failed to unregister failed thread:', error.message);
-          })
-        );
-      }
-      emitJobEvent(job, eventPayload);
-    }
+    onEvent
   ).then(async (finalSessionId) => {
     if (finalSessionId) {
       state.sessionId = finalSessionId;
@@ -361,7 +405,28 @@ export function runQueuedHeadlessChatJob({
         userMessage: job.displayMessage
       });
     }
+  }, (error) => {
+    // A runner that throws instead of emitting chat-error (setup failure
+    // before its own catch) must not become a process-fatal unhandledRejection.
+    // Same event pair the runners send, so the status row stops spinning.
+    // (Second .then argument: a throw in the success handler above must not
+    // turn a completed turn into a failed one.)
+    console.error('[chat] Turn runner failed:', error);
+    const failedSessionId = state.sessionId || sessionId || job.draftSessionId || null;
+    const message = error?.message || String(error);
+    onEvent({
+      type: 'status-update',
+      sessionId: failedSessionId,
+      turnId: job.turnId,
+      kind: 'turn',
+      status: 'failed',
+      label: '任务失败',
+      detail: message,
+      timestamp: new Date().toISOString()
+    });
+    onEvent({ type: 'chat-error', sessionId: failedSessionId, turnId: job.turnId, error: message });
   }).finally(async () => {
+    clearTimeout(idleTimer);
     try {
       if (metadataUpdates.length) await Promise.allSettled(metadataUpdates);
       const snapshot = await refreshCodexCache();

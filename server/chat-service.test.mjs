@@ -518,3 +518,131 @@ test('sendChat records duration-only latency milestones without message content'
     'totalServerMs'
   ]);
 });
+
+test('sendChat skips desktop IPC when the probe reports the desktop unreachable', async () => {
+  let desktopCalled = false;
+  let runPayload = null;
+  const { service } = makeChatService({
+    getDesktopBridgeStatus: async () => ({
+      strict: false,
+      connected: false,
+      mode: 'desktop-ipc',
+      reason: 'probe timed out',
+      capabilities: { sendToOpenDesktopThread: true, backgroundCodex: true }
+    }),
+    startDesktopFollowerTurn: async () => {
+      desktopCalled = true;
+      return { result: { turn: { id: 'desktop-turn-1' } } };
+    },
+    runCodexTurn: async (payload, emit) => {
+      runPayload = payload;
+      emit({ type: 'chat-complete', sessionId: 'thread-1', turnId: payload.turnId });
+      return 'thread-1';
+    }
+  });
+
+  const result = await service.sendChat({ projectId: 'project-1', sessionId: 'thread-1', message: 'desktop hung' });
+  await flushQueuedWork();
+
+  assert.equal(desktopCalled, false);
+  assert.equal(result.desktopBridge.mode, 'headless-local');
+  assert.equal(runPayload.sessionId, 'thread-1');
+});
+
+test('a runner that throws becomes chat-error instead of an unhandled rejection', async () => {
+  const { service, broadcasts } = makeChatService({
+    runCodexTurn: async () => {
+      throw new Error('temp dir not writable');
+    }
+  });
+
+  await service.sendChat({ projectId: 'project-1', sessionId: 'thread-1', message: 'boom' });
+  await flushQueuedWork();
+  await flushQueuedWork();
+
+  const error = broadcasts.find((payload) => payload.type === 'chat-error');
+  assert.equal(error?.error, 'temp dir not writable');
+  const failed = broadcasts.find((payload) => payload.type === 'status-update' && payload.kind === 'turn');
+  assert.equal(failed?.status, 'failed');
+});
+
+test('a silent turn is aborted by the idle watchdog', async () => {
+  const previous = process.env.CODEXMOBILE_TURN_IDLE_TIMEOUT_MS;
+  process.env.CODEXMOBILE_TURN_IDLE_TIMEOUT_MS = '20';
+  let release;
+  const aborted = [];
+  try {
+    const { service } = makeChatService({
+      abortCodexTurn: (turnId) => {
+        aborted.push(turnId);
+        release?.();
+        return true;
+      },
+      runCodexTurn: (payload) => new Promise((resolve) => {
+        release = () => resolve(payload.sessionId);
+      })
+    });
+
+    const result = await service.sendChat({ projectId: 'project-1', sessionId: 'thread-1', message: 'hang' });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    assert.deepEqual(aborted, [result.turnId]);
+  } finally {
+    if (previous === undefined) delete process.env.CODEXMOBILE_TURN_IDLE_TIMEOUT_MS;
+    else process.env.CODEXMOBILE_TURN_IDLE_TIMEOUT_MS = previous;
+  }
+});
+
+test('an unreachable desktop that still has the thread open refuses instead of running in background', async () => {
+  let ran = false;
+  const { service } = makeChatService({
+    getDesktopBridgeStatus: async () => ({
+      strict: false,
+      connected: false,
+      mode: 'desktop-ipc',
+      capabilities: { sendToOpenDesktopThread: true, backgroundCodex: true }
+    }),
+    isDesktopThreadOpen: (id) => id === 'thread-1',
+    runCodexTurn: async () => {
+      ran = true;
+      return 'thread-1';
+    }
+  });
+
+  await assert.rejects(
+    service.sendChat({ projectId: 'project-1', sessionId: 'thread-1', message: 'desktop hung, thread open' }),
+    (error) => error.statusCode === 409
+  );
+  assert.equal(ran, false);
+});
+
+test('the idle watchdog leaves a turn alone while a tool call is still running', async () => {
+  const previous = process.env.CODEXMOBILE_TURN_IDLE_TIMEOUT_MS;
+  process.env.CODEXMOBILE_TURN_IDLE_TIMEOUT_MS = '20';
+  const aborted = [];
+  let finish;
+  try {
+    const { service } = makeChatService({
+      abortCodexTurn: (turnId) => {
+        aborted.push(turnId);
+        return true;
+      },
+      runCodexTurn: (payload, emit) => new Promise((resolve) => {
+        emit({ type: 'activity-update', sessionId: 'thread-1', turnId: payload.turnId, messageId: 'tool-1', status: 'running' });
+        finish = () => {
+          emit({ type: 'activity-update', sessionId: 'thread-1', turnId: payload.turnId, messageId: 'tool-1', status: 'completed' });
+          resolve('thread-1');
+        };
+      })
+    });
+
+    await service.sendChat({ projectId: 'project-1', sessionId: 'thread-1', message: 'long build' });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.deepEqual(aborted, []);
+    finish();
+    await flushQueuedWork();
+  } finally {
+    if (previous === undefined) delete process.env.CODEXMOBILE_TURN_IDLE_TIMEOUT_MS;
+    else process.env.CODEXMOBILE_TURN_IDLE_TIMEOUT_MS = previous;
+  }
+});

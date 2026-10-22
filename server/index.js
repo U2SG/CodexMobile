@@ -31,7 +31,7 @@ import {
   renameSession
 } from './codex-data.js';
 import { getCodexQuota, switchCodexAccount } from './codex-quota.js';
-import { abortCodexTurn, getActiveRuns as getCodexActiveRuns, runCodexTurn } from './codex-runner.js';
+import { abortCodexTurn, getActiveRuns as getCodexActiveRuns, runCodexTurn, terminateAllRunProcesses } from './codex-runner.js';
 import { defaultProvider, defaultModel, defaultModelShort, isClaudeMode } from './agent-mode.js';
 import { liveEnv } from './env-file.js';
 import { agentCapabilities, currentAgentMatchesSession } from './agent-capabilities.js';
@@ -86,7 +86,7 @@ import { publicVoiceTranscriptionStatus, transcribeAudio } from './voice-transcr
 import { listPendingApprovals } from './approval-pool.js';
 import { publicVoiceSpeechStatus, synthesizeSpeech } from './voice-speaker.js';
 import { publicVoiceRealtimeStatus, startVoiceRealtimeProxy } from './realtime-voice.js';
-import { remoteAddress, sendJson } from './http-utils.js';
+import { readBody, remoteAddress, sendJson } from './http-utils.js';
 
 // Global safety net for AbortError leaks from cancelled turns.
 //
@@ -109,14 +109,36 @@ process.on('unhandledRejection', (reason) => {
     return;
   }
   console.error('[fatal] unhandledRejection:', reason);
+  terminateAllRunProcesses();
   process.exit(1);
 });
+// Ctrl+C / console close / service stop: take the CLI children down with us
+// so they do not linger holding session locks. (A hard TerminateProcess from
+// Stop-Process cannot be intercepted; tree kills on abort cover that path.)
+let shuttingDown = false;
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[shutdown] ${signal}: stopping child processes`);
+  terminateAllRunProcesses();
+  try {
+    const { closeAllAppServerClients } = await import('./codex-app-server.js');
+    closeAllAppServerClients();
+  } catch {
+    // best effort
+  }
+  process.exit(0);
+}
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGBREAK', 'SIGHUP']) {
+  process.on(signal, () => shutdown(signal));
+}
 process.on('uncaughtException', (err) => {
   if (isAbortLike(err)) {
     console.warn('[abort] swallowed uncaught AbortError:', err?.message || err);
     return;
   }
   console.error('[fatal] uncaughtException:', err);
+  terminateAllRunProcesses();
   process.exit(1);
 });
 
@@ -182,7 +204,10 @@ bridgeStatus.onChange((status) => {
 
 
 threadTracker.onActivity(({ conversationId, change }) => {
-  console.log(`[chat] IPC activity session=${conversationId} change.type=${change?.type || 'unknown'}`);
+  // One line per desktop IPC frame was ~98% of server.out.log; debug only.
+  if (process.env.CODEXMOBILE_DEBUG_IPC === '1') {
+    console.log(`[chat] IPC activity session=${conversationId} change.type=${change?.type || 'unknown'}`);
+  }
 });
 
 threadTracker.start().catch((error) => {
@@ -720,7 +745,29 @@ async function handleApi(req, res, url) {
   }
 
 
+  // HTTP twin of the WS approval-response frame: a tap on a zombie socket
+  // was silently dropped while the sheet closed anyway.
+  if (method === 'POST' && pathname === '/api/approval-response') {
+    const body = await readBody(req);
+    if (!body?.requestId) {
+      sendJson(res, 400, { error: 'requestId is required' });
+      return;
+    }
+    sendJson(res, 200, { resolved: await respondToApproval(body) });
+    return;
+  }
+
   sendJson(res, 404, { error: 'Not found' });
+}
+
+async function respondToApproval(frame) {
+  const { resolveCodexApproval } = await import('./codex-app-server-runner.js');
+  return resolveCodexApproval(frame.requestId, {
+    decision: frame.decision,
+    permissions: frame.permissions,
+    answers: frame.answers,
+    elicitationResponse: frame.elicitationResponse
+  });
 }
 
 async function requestHandler(req, res) {
@@ -748,8 +795,10 @@ async function main() {
   claudeAutoTitler.schedule();
 
   const server = http.createServer(requestHandler);
-  const wss = new WebSocketServer({ noServer: true });
-  const realtimeWss = new WebSocketServer({ noServer: true });
+  // Client frames are tiny JSON control messages; ws's 100 MiB default lets a
+  // single bad frame balloon memory. Realtime voice carries audio chunks.
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
+  const realtimeWss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 });
 
   // Heartbeat: an iOS PWA frozen in the background leaves a half-dead TCP
   // connection that never emits 'close'. Every 25s, terminate sockets that
@@ -778,7 +827,20 @@ async function main() {
   }, HEARTBEAT_INTERVAL_MS);
   heartbeatTimer.unref();
 
+  // A rejected promise or an unlistened 'error' here is process-fatal (see the
+  // unhandledRejection handler above), so every await is contained and both
+  // the raw socket and the upgraded ws get an error listener.
   const handleUpgrade = async (req, socket, head) => {
+    socket.on('error', () => socket.destroy());
+    try {
+      await upgradeSocket(req, socket, head);
+    } catch (error) {
+      console.warn('[ws] upgrade failed:', error.message);
+      socket.destroy();
+    }
+  };
+
+  const upgradeSocket = async (req, socket, head) => {
     const url = new URL(req.url || '/', `http://${req.headers.host || `127.0.0.1:${PORT}`}`);
     if (url.pathname !== '/ws' && url.pathname !== '/ws/realtime') {
       socket.destroy();
@@ -800,54 +862,56 @@ async function main() {
       return;
     }
 
-    wss.handleUpgrade(req, socket, head, async (ws) => {
-      sockets.add(ws);
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      onSocketOpen(ws).catch((error) => {
+        console.warn('[ws] connection setup failed:', error.message);
+        ws.terminate();
+      });
+    });
+  };
+
+  const onSocketOpen = async (ws) => {
+    sockets.add(ws);
+    ws.isAlive = true;
+    ws.on('error', () => ws.terminate());
+    ws.on('pong', () => {
       ws.isAlive = true;
-      ws.on('pong', () => {
-        ws.isAlive = true;
-      });
-      ws.on('close', () => sockets.delete(ws));
-      ws.on('message', async (raw) => {
-        let frame;
+    });
+    ws.on('close', () => sockets.delete(ws));
+    ws.on('message', async (raw) => {
+      let frame;
+      try {
+        frame = JSON.parse(raw.toString('utf8'));
+      } catch {
+        return;
+      }
+      if (frame?.type === 'liveness-probe' && typeof frame.id === 'string' && frame.id.length <= 128) {
         try {
-          frame = JSON.parse(raw.toString('utf8'));
+          ws.send(JSON.stringify({
+            type: 'liveness-ack',
+            id: frame.id,
+            activeRuns: activeRunsSnapshot()
+          }));
         } catch {
-          return;
+          // A dead socket will be removed by close/heartbeat handling.
         }
-        if (frame?.type === 'liveness-probe' && typeof frame.id === 'string' && frame.id.length <= 128) {
-          try {
-            ws.send(JSON.stringify({
-              type: 'liveness-ack',
-              id: frame.id,
-              activeRuns: activeRunsSnapshot()
-            }));
-          } catch {
-            // A dead socket will be removed by close/heartbeat handling.
-          }
-          return;
+        return;
+      }
+      if (frame?.type === 'approval-response' && frame.requestId) {
+        try {
+          await respondToApproval(frame);
+        } catch (error) {
+          console.warn('[ws] approval-response handling failed:', error.message);
         }
-        if (frame?.type === 'approval-response' && frame.requestId) {
-          try {
-            const { resolveCodexApproval } = await import('./codex-app-server-runner.js');
-            resolveCodexApproval(frame.requestId, {
-              decision: frame.decision,
-              permissions: frame.permissions,
-              answers: frame.answers,
-              elicitationResponse: frame.elicitationResponse
-            });
-          } catch (error) {
-            console.warn('[ws] approval-response handling failed:', error.message);
-          }
-        }
-      });
-      ws.send(JSON.stringify({ type: 'connected', status: await publicStatus(true) }));
-      for (const approval of listPendingApprovals()) {
-        ws.send(JSON.stringify({
-          type: 'approval-request',
-          ...approval
-        }));
       }
     });
+    ws.send(JSON.stringify({ type: 'connected', status: await publicStatus(true) }));
+    for (const approval of listPendingApprovals()) {
+      ws.send(JSON.stringify({
+        type: 'approval-request',
+        ...approval
+      }));
+    }
   };
 
   server.on('upgrade', handleUpgrade);

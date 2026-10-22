@@ -223,12 +223,13 @@ function titleFor(kind) {
   }
 }
 
-export default function ApprovalSheet({ requests, onRespond }) {
+export default function ApprovalSheet({ requests, onRespond, error = null }) {
   const head = requests[0];
   const remaining = useMemo(() => requests.length - 1, [requests.length]);
   if (!head) return null;
 
   const send = (decision) => onRespond(head.requestId, decision);
+  const errorText = error?.requestId === head.requestId ? error.message : '';
 
   if (head.kind === 'claudeQuestion') {
     return (
@@ -241,6 +242,7 @@ export default function ApprovalSheet({ requests, onRespond }) {
               <span className="approval-sheet__queue">还有 {remaining} 个待确认</span>
             ) : null}
           </div>
+          {errorText ? <p className="approval-sheet__error" role="alert">{errorText}</p> : null}
           <div className="approval-sheet__body">
             <ClaudeQuestionForm
               key={head.requestId}
@@ -264,6 +266,7 @@ export default function ApprovalSheet({ requests, onRespond }) {
             <span className="approval-sheet__queue">还有 {remaining} 个待确认</span>
           ) : null}
         </div>
+        {errorText ? <p className="approval-sheet__error" role="alert">{errorText}</p> : null}
         <div className="approval-sheet__body">{previewFor(head.kind, head.params)}</div>
         <div className="approval-sheet__buttons">
           <button type="button" className="approval-sheet__btn approval-sheet__btn--deny" onClick={() => send({ decision: 'denied' })}>拒绝</button>

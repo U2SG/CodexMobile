@@ -6,6 +6,7 @@ import { abortCodexTurn, getActiveRunRegistry } from './codex-runner.js';
 
 function fakeClientFactory({ clientTurnId, abortAt, runtimeThreadId = 'runtime-thread', runtimeTurnId = 'runtime-turn', calls }) {
   return () => ({
+    closed: new Promise(() => {}),
     async initialize() {
       calls.push({ method: 'initialize' });
       if (abortAt === 'initialize') {

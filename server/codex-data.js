@@ -225,22 +225,16 @@ function isoFromSqliteTime(msValue, secondsValue) {
   return null;
 }
 
-async function readThreadStateIndex() {
-  const index = new Map();
-  try {
-    await fs.access(CODEX_STATE_DB_PATH);
-  } catch {
-    return index;
-  }
-
-  const sql = `
+// Previews are display text; selecting them whole pushed the CLI's JSON
+// output to ~8 MB (near maxBuffer) for ~2k threads.
+const THREAD_STATE_SQL = `
     select
       id,
-      coalesce(nullif(name, ''), nullif(title, ''), nullif(preview, ''), nullif(first_user_message, '')) as thread_name,
+      coalesce(nullif(name, ''), nullif(title, ''), substr(nullif(preview, ''), 1, 300), substr(nullif(first_user_message, ''), 1, 300)) as thread_name,
       updated_at_ms,
       updated_at,
-      preview,
-      first_user_message,
+      substr(preview, 1, 300) as preview,
+      substr(first_user_message, 1, 300) as first_user_message,
       cwd,
       model,
       model_provider,
@@ -249,13 +243,54 @@ async function readThreadStateIndex() {
     where archived = 0
   `;
 
+let threadStateCache = null;
+
+async function threadStateDbSignature() {
+  // Codex writes through WAL, so the -wal file moves first.
+  const [db, wal] = await Promise.all([
+    fs.stat(CODEX_STATE_DB_PATH),
+    fs.stat(`${CODEX_STATE_DB_PATH}-wal`).catch(() => null)
+  ]);
+  return `${db.mtimeMs}:${db.size}:${wal?.mtimeMs || 0}:${wal?.size || 0}`;
+}
+
+async function queryThreadStateRows() {
+  let sqlite = null;
   try {
-    const { stdout } = await execFileAsync(
-      process.env.CODEXMOBILE_SQLITE_BIN || 'sqlite3',
-      ['-readonly', '-json', CODEX_STATE_DB_PATH, sql],
-      { windowsHide: true, timeout: 10_000, maxBuffer: 10 * 1024 * 1024 }
-    );
-    const rows = JSON.parse(stdout || '[]');
+    sqlite = await import('node:sqlite');
+  } catch {
+    // Node < 22.5: fall back to the sqlite3 CLI.
+  }
+  if (sqlite?.DatabaseSync) {
+    const db = new sqlite.DatabaseSync(CODEX_STATE_DB_PATH, { readOnly: true });
+    try {
+      return db.prepare(THREAD_STATE_SQL).all();
+    } finally {
+      db.close();
+    }
+  }
+  const { stdout } = await execFileAsync(
+    process.env.CODEXMOBILE_SQLITE_BIN || 'sqlite3',
+    ['-readonly', '-json', CODEX_STATE_DB_PATH, THREAD_STATE_SQL],
+    { windowsHide: true, timeout: 10_000, maxBuffer: 32 * 1024 * 1024 }
+  );
+  return JSON.parse(stdout || '[]');
+}
+
+async function readThreadStateIndex() {
+  let signature;
+  try {
+    signature = await threadStateDbSignature();
+  } catch {
+    return new Map();
+  }
+  if (threadStateCache?.signature === signature) {
+    return threadStateCache.index;
+  }
+
+  const index = new Map();
+  try {
+    const rows = await queryThreadStateRows();
     for (const row of Array.isArray(rows) ? rows : []) {
       if (!row?.id) {
         continue;
@@ -270,10 +305,11 @@ async function readThreadStateIndex() {
         rolloutPath: row.rollout_path || null
       });
     }
+    threadStateCache = { signature, index };
   } catch (error) {
     const code = error?.code || '';
     if (code !== 'ENOENT') {
-      console.warn('[sessions] Failed to read Codex thread state:', error.message);
+      console.warn('[sessions] Failed to read Codex thread state:', error.message, error.stderr ? String(error.stderr).trim() : '');
     }
   }
   return index;
@@ -938,11 +974,36 @@ export function upsertLatestSession(session, sessionsByProject, sessionById, pro
   sessionById.set(session.id, session);
 }
 
-export async function refreshCodexCache() {
+// Single-flight: turn ends, syncs, archive actions and the auto-titler all
+// call this, often at once, and each run stats every session file. Callers
+// during a run share one trailing re-run so nobody gets pre-change data.
+let refreshInFlight = null;
+let refreshQueued = null;
+
+export function refreshCodexCache() {
+  if (!refreshInFlight) {
+    refreshInFlight = refreshCodexCacheNow().finally(() => {
+      refreshInFlight = null;
+    });
+    return refreshInFlight;
+  }
+  if (!refreshQueued) {
+    refreshQueued = refreshInFlight
+      .catch(() => null)
+      .then(() => {
+        refreshQueued = null;
+        return refreshCodexCache();
+      });
+  }
+  return refreshQueued;
+}
+
+async function refreshCodexCacheNow() {
   const claudeMode = isClaudeMode();
   const config = claudeMode ? await readClaudeConfig() : await readCodexConfig();
   const workspaceState = claudeMode ? { projects: [] } : await readCodexWorkspaceState();
-  const sessionIndex = await readSessionNameIndex();
+  // Codex-only: Claude sessions never consult the thread name index.
+  const sessionIndex = claudeMode ? new Map() : await readSessionNameIndex();
   const mobileSessionIndex = await readMobileSessionIndex();
   const mobileSessions = await readMobileSessions();
   const hiddenProjectIds = await readHiddenProjectIds();

@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { gzipSync } from 'node:zlib';
+import { constants as zlibConstants, gzip, gzipSync } from 'node:zlib';
 
 export const MAX_JSON_BYTES = 2 * 1024 * 1024;
 
@@ -44,12 +44,37 @@ export function sendStaticContent(req, res, status, content, headers, ext, {
   res.end(body);
 }
 
+// Session lists and 120-message pages with activity run to hundreds of KB
+// and compress ~5-10x — worth it over Tailscale on cellular. Async + a fast
+// level so a big page doesn't stall the event loop.
+const JSON_GZIP_MIN_BYTES = 1024;
+
 export function sendJson(res, status, payload) {
-  res.writeHead(status, {
+  const headers = {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store'
+  };
+  const body = JSON.stringify(payload);
+  if (body.length < JSON_GZIP_MIN_BYTES || !res.req || !acceptsGzip(res.req)) {
+    res.writeHead(status, headers);
+    res.end(body);
+    return;
+  }
+  gzip(body, { level: zlibConstants.Z_BEST_SPEED }, (error, compressed) => {
+    if (res.headersSent || res.destroyed) return;
+    if (error) {
+      res.writeHead(status, headers);
+      res.end(body);
+      return;
+    }
+    res.writeHead(status, {
+      ...headers,
+      'content-encoding': 'gzip',
+      vary: 'Accept-Encoding',
+      'content-length': compressed.length
+    });
+    res.end(compressed);
   });
-  res.end(JSON.stringify(payload));
 }
 
 export function sendHtml(res, status, html) {

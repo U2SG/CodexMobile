@@ -68,6 +68,10 @@ export function useAppWebSocket({
     // OPEN and no close event ever fires.
     const HEARTBEAT_STALE_MS = 65_000;
     const LIVENESS_ACK_TIMEOUT_MS = 2_500;
+    // A handshake that dies mid-flight (Wi-Fi -> LTE) can leave the socket in
+    // CONNECTING with no close event; nothing else reaps that state.
+    const CONNECT_TIMEOUT_MS = 10_000;
+    let connectTimer = null;
     let lastFrameAt = Date.now();
     const socketLooksStale = () => Date.now() - lastFrameAt > HEARTBEAT_STALE_MS;
 
@@ -173,8 +177,24 @@ export function useAppWebSocket({
       setConnectionState('connecting');
       const ws = new WebSocket(websocketUrl());
       wsRef.current = ws;
+      window.clearTimeout(connectTimer);
+      connectTimer = window.setTimeout(() => {
+        if (stopped || wsRef.current !== ws || ws.readyState !== WebSocket.CONNECTING) return;
+        ws.onopen = null;
+        ws.onclose = null;
+        ws.onerror = null;
+        ws.onmessage = null;
+        try {
+          ws.close();
+        } catch {
+          // ignore — a fresh socket replaces it
+        }
+        setConnectionState('disconnected');
+        scheduleReconnect();
+      }, CONNECT_TIMEOUT_MS);
 
       ws.onopen = () => {
+        window.clearTimeout(connectTimer);
         lastFrameAt = Date.now();
         setConnectionState('connecting');
       };
@@ -188,7 +208,12 @@ export function useAppWebSocket({
       ws.onerror = () => setConnectionState('disconnected');
       ws.onmessage = (event) => {
         lastFrameAt = Date.now();
-        const payload = JSON.parse(event.data);
+        let payload;
+        try {
+          payload = JSON.parse(event.data);
+        } catch {
+          return;
+        }
         if (payload.turnId) {
           markClientTurnLatency(payload.turnId, 'firstWsEvent');
         }
@@ -486,11 +511,14 @@ export function useAppWebSocket({
     }
     if (typeof window !== 'undefined') {
       window.addEventListener('online', handleOnline);
+      // bfcache restores fire pageshow, not visibilitychange.
+      window.addEventListener('pageshow', handleOnline);
     }
 
     return () => {
       stopped = true;
       clearLivenessProbe();
+      window.clearTimeout(connectTimer);
       window.clearInterval(heartbeatWatchdog);
       if (reconnectTimer) {
         window.clearTimeout(reconnectTimer);
@@ -500,6 +528,7 @@ export function useAppWebSocket({
       }
       if (typeof window !== 'undefined') {
         window.removeEventListener('online', handleOnline);
+        window.removeEventListener('pageshow', handleOnline);
       }
       streamBuffer.flushAll();
       wsRef.current?.close();

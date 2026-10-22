@@ -26,7 +26,13 @@ function dedupePath(value) {
     .join(path.delimiter);
 }
 
+// libuv's default 4 threads are shared by every fs call; the session scans
+// (~1k jsonl files) queued turn-start reads behind them. Must be set before
+// the child's first fs call, hence here rather than in server/index.js.
 function childEnv() {
+  if (!process.env.UV_THREADPOOL_SIZE) {
+    process.env.UV_THREADPOOL_SIZE = '16';
+  }
   if (process.platform !== 'win32') {
     return process.env;
   }
@@ -47,6 +53,18 @@ function childEnv() {
     process.env.PATH
   ].filter(Boolean).join(path.delimiter));
   return env;
+}
+
+// Logs append forever otherwise; keep one previous generation per file.
+const LOG_ROTATE_BYTES = 5 * 1024 * 1024;
+for (const logPath of [outPath, errPath]) {
+  try {
+    if (fs.statSync(logPath).size > LOG_ROTATE_BYTES) {
+      fs.renameSync(logPath, `${logPath}.1`);
+    }
+  } catch {
+    // missing log, or locked by a still-running server: keep appending
+  }
 }
 
 const out = fs.openSync(outPath, 'a');

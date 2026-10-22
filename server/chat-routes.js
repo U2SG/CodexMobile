@@ -24,6 +24,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import { readBody, sendJson } from './http-utils.js';
+import { killProcessTree } from './process-tree.js';
 
 const COMPACT_TIMEOUT_MS = 90_000;
 const COMPACT_PROMPT_LIMIT = 40_000;
@@ -70,7 +71,7 @@ function runClaudeSummarize(prompt) {
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGTERM');
+      killProcessTree(child);
       reject(new Error(`compact summarization timed out after ${Math.round(COMPACT_TIMEOUT_MS / 1000)}s`));
     }, COMPACT_TIMEOUT_MS);
     child.on('error', (spawnError) => {

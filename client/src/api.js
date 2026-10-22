@@ -12,6 +12,21 @@ export function clearToken() {
   localStorage.removeItem(TOKEN_KEY);
 }
 
+// A GET that stalls after a network switch never settles on iOS, which
+// leaves pollers waiting on it forever. The deadline only has to beat a dead
+// socket, so it sits above the slowest legitimate reads (search, git history,
+// a desktop thread read behind IPC timeouts). Writes keep no deadline: a slow
+// send must not be retried as a duplicate turn.
+const GET_TIMEOUT_MS = 45_000;
+
+function requestSignal(options) {
+  const method = String(options.method || 'GET').toUpperCase();
+  if (options.signal || method !== 'GET' || typeof AbortSignal.timeout !== 'function') {
+    return options.signal;
+  }
+  return AbortSignal.timeout(GET_TIMEOUT_MS);
+}
+
 export async function apiFetch(path, options = {}) {
   const token = getToken();
   const headers = {
@@ -20,17 +35,31 @@ export async function apiFetch(path, options = {}) {
     ...(options.headers || {})
   };
 
-  const response = await fetch(path, {
-    ...options,
-    headers,
-    body:
-      options.body && !(options.body instanceof FormData) && typeof options.body !== 'string'
-        ? JSON.stringify(options.body)
-        : options.body
-  });
+  let response;
+  try {
+    response = await fetch(path, {
+      ...options,
+      headers,
+      signal: requestSignal(options),
+      body:
+        options.body && !(options.body instanceof FormData) && typeof options.body !== 'string'
+          ? JSON.stringify(options.body)
+          : options.body
+    });
+  } catch (error) {
+    if (error?.name === 'TimeoutError') throw new Error('请求超时，请检查网络后重试');
+    throw error;
+  }
 
   const text = await response.text();
-  const data = text ? JSON.parse(text) : {};
+  let data = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    // A proxy/gateway HTML error page: keep the status code visible.
+    if (!response.ok) throw new Error(`Request failed: ${response.status}`);
+    throw new Error('Invalid JSON response');
+  }
   if (!response.ok) {
     throw new Error(data.error || `Request failed: ${response.status}`);
   }
