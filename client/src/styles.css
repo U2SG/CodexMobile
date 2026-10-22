@@ -8424,3 +8424,16 @@ button {
     background: transparent;
   }
 }
+
+.lazy-boundary-error {
+  padding: 16px;
+  background: var(--panel, #fff);
+  border-radius: 12px;
+  text-align: center;
+}
+
+.lazy-boundary-error button {
+  margin-top: 8px;
+  min-height: 44px;
+  padding: 0 16px;
+}

@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AUTH_LOST_EVENT, apiFetch, clearToken, getToken, setToken, websocketUrl } from './api.js';
 import { agentMeta } from './agent-meta.js';
 import { Composer } from './composer/Composer.jsx';
@@ -59,6 +59,7 @@ import { useTurnSubmission } from './app/useTurnSubmission.js';
 import { useViewportSizing } from './app/useViewportSizing.js';
 import NotificationSettings from './notifications.jsx';
 import { ActivityPanel } from './panels/ActivityPanel.jsx';
+import { LazyBoundary } from './LazyBoundary.jsx';
 
 // Opened on demand; keeps the git views and diff renderer out of the startup bundle.
 const GitPanel = lazy(() => import('./git-panel.jsx'));
@@ -86,7 +87,8 @@ export default function App() {
   const [status, setStatus] = useState(DEFAULT_STATUS);
   const [authenticated, setAuthenticated] = useState(Boolean(getToken()));
   useEffect(() => {
-    const onAuthLost = () => {
+    const onAuthLost = (event) => {
+      if (event?.detail?.token && event.detail.token !== getToken()) return;
       clearToken();
       setAuthenticated(false);
     };
@@ -686,7 +688,7 @@ export default function App() {
       {gitOpen && selectedProject ? (
         <div style={modalBackdropStyle} onClick={() => setGitOpen(false)}>
           <div style={modalShellStyle} onClick={(e) => e.stopPropagation()}>
-            <Suspense fallback={null}>
+            <LazyBoundary>
             <GitPanel
               project={selectedProject}
               peers={peers}
@@ -715,7 +717,7 @@ export default function App() {
                 setGitOpen(false);
               }}
             />
-            </Suspense>
+            </LazyBoundary>
           </div>
         </div>
       ) : null}

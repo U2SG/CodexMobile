@@ -80,9 +80,10 @@ export function useAppWebSocket({
     const checkAuthAfterFailedHandshakes = () => {
       failedHandshakes += 1;
       if (failedHandshakes % AUTH_CHECK_AFTER_FAILURES !== 0) return;
+      const checkedToken = getToken();
       apiFetch('/api/status')
         .then((status) => {
-          if (!stopped && status?.auth && status.auth.authenticated === false) notifyAuthLost();
+          if (!stopped && status?.auth && status.auth.authenticated === false) notifyAuthLost(checkedToken);
         })
         .catch(() => null);
     };

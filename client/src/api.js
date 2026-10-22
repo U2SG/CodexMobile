@@ -17,9 +17,11 @@ export function clearToken() {
 // returning to the pairing screen.
 export const AUTH_LOST_EVENT = 'codexmobile:auth-lost';
 
-export function notifyAuthLost() {
+// Carries the token that was rejected: a late 401 from a request sent with
+// an old token must not sign out a device that has since re-paired.
+export function notifyAuthLost(rejectedToken) {
   if (typeof window !== 'undefined') {
-    window.dispatchEvent(new Event(AUTH_LOST_EVENT));
+    window.dispatchEvent(new CustomEvent(AUTH_LOST_EVENT, { detail: { token: rejectedToken } }));
   }
 }
 
@@ -72,7 +74,7 @@ export async function apiFetch(path, options = {}) {
     throw new Error('Invalid JSON response');
   }
   if (!response.ok) {
-    if (response.status === 401 && token) notifyAuthLost();
+    if (response.status === 401 && token) notifyAuthLost(token);
     throw new Error(data.error || `Request failed: ${response.status}`);
   }
   return data;

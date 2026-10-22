@@ -4,7 +4,8 @@
 // are parsed by cmd.exe. Build the command line ourselves instead, quoting
 // every argument; values that cmd.exe cannot carry safely are refused rather
 // than passed through mangled — send those via a file or stdin.
-const CMD_UNSAFE = /["%\r\n]/;
+// cmd.exe only expands %NAME% pairs; a lone % (C:\Temp\100%) stays literal.
+const CMD_UNSAFE = /["\r\n]|%[^%\s]+%/;
 const NEEDS_QUOTES = /[\s&|<>^()!,;=]/;
 
 export function quoteCmdArg(arg) {
