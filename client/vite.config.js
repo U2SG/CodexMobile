@@ -6,7 +6,18 @@ export default defineConfig({
   plugins: [react()],
   build: {
     outDir: 'dist',
-    emptyOutDir: true
+    emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        // Dependencies change far less often than app code; a separate chunk
+        // keeps its hash (and the phone's cached copy) stable across deploys.
+        // pdfjs stays in its own lazy chunk.
+        manualChunks(id) {
+          if (id.includes('node_modules') && !id.includes('pdfjs-dist')) return 'vendor';
+          return undefined;
+        }
+      }
+    }
   },
   server: {
     port: 5173,

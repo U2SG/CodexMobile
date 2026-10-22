@@ -1,4 +1,4 @@
-import { readBody, sendJson } from './http-utils.js';
+import { readBody, sendJson, sendJsonRevalidated } from './http-utils.js';
 
 export function createSessionRoutes({
   listProjectSessions,
@@ -116,7 +116,8 @@ export function createSessionRoutes({
         latest: offsetParam === null || url.searchParams.get('latest') === '1',
         includeActivity: url.searchParams.get('includeActivity') === '1'
       });
-      sendJson(res, 200, result);
+      // Polled every 2.5s while the session is idle; unchanged pages cost a 304.
+      sendJsonRevalidated(req, res, result);
       return true;
     }
 

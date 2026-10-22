@@ -4,7 +4,7 @@
 //
 // Extracted from App.jsx (Batch B R9).
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, Copy } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -108,7 +108,9 @@ function CodeBlock({ className, children }) {
   );
 }
 
-export function MessageContent({ content, onPreviewImage, isUser }) {
+// Memoized: while one reply streams, every earlier message re-rendered and
+// re-parsed its markdown ~16x/s. Props are primitives plus a stable setter.
+export const MessageContent = memo(function MessageContent({ content, onPreviewImage, isUser }) {
   const text = String(content || '');
 
   // Rebuilding markdownComponents on every render replaces ReactMarkdown's
@@ -173,4 +175,4 @@ export function MessageContent({ content, onPreviewImage, isUser }) {
       </ReactMarkdown>
     </div>
   );
-}
+});

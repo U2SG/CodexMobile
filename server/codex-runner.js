@@ -14,6 +14,7 @@ import { claudeAssistantMessageId, createClaudePartialStreamState, processClaude
 import { buildClaudeSkillsAppendix } from './claude-skills.js';
 import { getClaudeHookSecret } from './approval-pool.js';
 import { killProcessTree } from './process-tree.js';
+import { shellSpawnArgs } from './shell-command.js';
 
 const CLAUDE_APPROVAL_HOOK_PATH = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -928,6 +929,7 @@ async function runClaudeTurn({ sessionId, draftSessionId, projectPath, message, 
   // turned into chat-error by the delivery layer. The resume lookup scans
   // every project dir, so chat-started goes out first.
   let claudeSettingsTempPath = null;
+  let claudeSkillsTempPath = null;
   try {
     // If the session was created under a different cwd than the project we were
     // asked to use, Claude's `--resume` will fail with "No conversation found".
@@ -968,8 +970,15 @@ async function runClaudeTurn({ sessionId, draftSessionId, projectPath, message, 
       '--model',
       requestedClaudeModel
     ];
+    // turnId can come from the client; keep it to a plain file-name token.
+    const tempFileTag = String(turnId).replace(/[^\w-]/g, '_');
+    // Skill bodies are multi-line markdown: as a command-line arg cmd.exe cut
+    // them at the first newline and parsed `| > &` inside them. A file path
+    // survives intact (same reason the settings below go through a file).
     if (skillsAppendix) {
-      args.push('--append-system-prompt', skillsAppendix);
+      claudeSkillsTempPath = path.join(os.tmpdir(), `codexmobile-claude-skills-${tempFileTag}.md`);
+      await fs.writeFile(claudeSkillsTempPath, skillsAppendix, 'utf8');
+      args.push('--append-system-prompt-file', claudeSkillsTempPath);
     }
     // Install the PreToolUse hook only when the toggle is on AND the server
     // exposed its loopback URL. The hook script itself fails open if the env
@@ -984,7 +993,7 @@ async function runClaudeTurn({ sessionId, draftSessionId, projectPath, message, 
     if (claudeHooksEnabled() && hookUrl) {
       claudeSettingsTempPath = path.join(
         os.tmpdir(),
-        `codexmobile-claude-settings-${turnId}.json`
+        `codexmobile-claude-settings-${tempFileTag}.json`
       );
       const composed = await buildClaudeSettingsWithApprovalHook(workingDirectory);
       await fs.writeFile(claudeSettingsTempPath, JSON.stringify(composed), 'utf8');
@@ -1028,11 +1037,12 @@ async function runClaudeTurn({ sessionId, draftSessionId, projectPath, message, 
       claudeEnv.CODEXMOBILE_SESSION_ID = currentSessionId;
     }
     releaseSpawnGate = await acquireClaudeSpawnGate();
-    const child = spawn(claudeExecutable(), claudeSpawnArgs(args), {
+    const launch = shellSpawnArgs(claudeExecutable(), claudeSpawnArgs(args));
+    const child = spawn(launch.command, launch.args, {
       cwd: workingDirectory,
       env: claudeEnv,
       windowsHide: true,
-      shell: process.platform === 'win32',
+      shell: launch.shell,
       signal: abortController.signal
     });
     // Release the gate after the child shows it has finished startup. First
@@ -1285,8 +1295,8 @@ async function runClaudeTurn({ sessionId, draftSessionId, projectPath, message, 
     break;
    }
   } finally {
-    if (claudeSettingsTempPath) {
-      fs.unlink(claudeSettingsTempPath).catch(() => null);
+    for (const tempPath of [claudeSettingsTempPath, claudeSkillsTempPath]) {
+      if (tempPath) fs.unlink(tempPath).catch(() => null);
     }
     if (activeRuns.has(turnId)) {
       const activeRun = activeRuns.get(turnId);

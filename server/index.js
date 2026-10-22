@@ -595,12 +595,45 @@ async function requireAuth(req, res, pathname = '') {
   return false;
 }
 
+// Backpressure for a phone on a slow link: assistant-update frames carry the
+// whole reply so far, so while the socket is backed up only the newest frame
+// per message is kept and it goes out once the buffer drains (the last
+// snapshot of a message is not marked done, so it may not be dropped). A
+// socket that backs up far beyond that is not draining at all; cut it so the
+// client reconnects and refetches.
+const COALESCE_ASSISTANT_FRAMES_BYTES = 1024 * 1024;
+const TERMINATE_BACKED_UP_SOCKET_BYTES = 16 * 1024 * 1024;
+
+// `force` is for any other frame (chat-complete, activity): held snapshots
+// must not arrive after the frame that follows them.
+function flushCoalescedFrames(socket, { force = false } = {}) {
+  if (!socket.coalescedFrames?.size) return;
+  if (!force && socket.bufferedAmount > COALESCE_ASSISTANT_FRAMES_BYTES) return;
+  for (const frame of socket.coalescedFrames.values()) socket.send(frame);
+  socket.coalescedFrames.clear();
+}
+
 function broadcast(payload) {
   const serialized = JSON.stringify(payload);
+  const coalesceKey = payload?.type === 'assistant-update'
+    ? `${payload.turnId || ''}:${payload.messageId || ''}`
+    : null;
   for (const socket of sockets) {
-    if (socket.readyState === socket.OPEN) {
-      socket.send(serialized);
+    if (socket.readyState !== socket.OPEN) continue;
+    if (socket.bufferedAmount > TERMINATE_BACKED_UP_SOCKET_BYTES) {
+      sockets.delete(socket);
+      socket.terminate();
+      continue;
     }
+    if (coalesceKey && socket.bufferedAmount > COALESCE_ASSISTANT_FRAMES_BYTES) {
+      socket.coalescedFrames ||= new Map();
+      socket.coalescedFrames.delete(coalesceKey);
+      socket.coalescedFrames.set(coalesceKey, serialized);
+      continue;
+    }
+    if (coalesceKey) socket.coalescedFrames?.delete(coalesceKey);
+    flushCoalescedFrames(socket, { force: !coalesceKey });
+    socket.send(serialized);
   }
 }
 
@@ -818,6 +851,9 @@ async function main() {
       }
       ws.isAlive = false;
       try {
+        // A stream that stopped while backed up has nothing left to push its
+        // held snapshots out; the heartbeat does once the buffer drains.
+        flushCoalescedFrames(ws);
         ws.ping();
         ws.send(frame);
       } catch {

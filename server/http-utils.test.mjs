@@ -7,7 +7,8 @@ import {
   readBody,
   remoteAddress,
   sendHtml,
-  sendJson
+  sendJson,
+  sendJsonRevalidated
 } from './http-utils.js';
 
 function fakeRes() {
@@ -154,4 +155,24 @@ test('readBody rejects bodies larger than MAX_JSON_BYTES', async () => {
 test('MAX_JSON_BYTES exposes the documented limit', () => {
   assert.equal(typeof MAX_JSON_BYTES, 'number');
   assert.ok(MAX_JSON_BYTES > 0);
+});
+
+test('sendJsonRevalidated answers a matching If-None-Match with a bodiless 304', () => {
+  const payload = { messages: [{ id: 'm1', content: 'hi' }] };
+  const first = fakeRes();
+  sendJsonRevalidated({ headers: {} }, first, payload);
+  assert.equal(first.statusCode, 200);
+  assert.equal(first.headers['cache-control'], 'private, no-cache');
+  const etag = first.headers.etag;
+  assert.match(etag, /^W\/"/);
+
+  const second = fakeRes();
+  sendJsonRevalidated({ headers: { 'if-none-match': etag } }, second, payload);
+  assert.equal(second.statusCode, 304);
+  assert.equal(second.body, '');
+
+  const changed = fakeRes();
+  sendJsonRevalidated({ headers: { 'if-none-match': etag } }, changed, { messages: [] });
+  assert.equal(changed.statusCode, 200);
+  assert.notEqual(changed.headers.etag, etag);
 });
