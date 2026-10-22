@@ -24,6 +24,14 @@ import {
 
 export { normalizeSelectedSkills } from './chat-request-prep.js';
 
+function desktopThreadBusyError() {
+  const busy = new Error(
+    '这个会话正在桌面 Codex 里打开，桌面占着写入权限，手机后台发不进去。请在桌面结束/关闭该会话后重试，或新开一个会话继续。'
+  );
+  busy.statusCode = 409;
+  return busy;
+}
+
 export function createChatService({
   imagePromptState,
   defaultReasoningEffort = 'xhigh',
@@ -416,7 +424,12 @@ export function createChatService({
     // the probe timed out). Going through IPC anyway costs a connect timeout
     // plus an initialize timeout (~30s) before failing; go straight to the
     // background runner instead.
+    // A thread the desktop still has open keeps its writer lock even while the
+    // desktop is hung, so refuse up front just like the IPC fallback below.
     if (bridge?.mode === 'desktop-ipc' && bridge.connected === false && desktopIpcCanUseBackgroundFallback(bridge)) {
+      if (selectedSessionId && isDesktopThreadOpen(selectedSessionId)) {
+        throw desktopThreadBusyError();
+      }
       bridge = backgroundFallbackBridge(bridge, '桌面端 Codex 当前未连接，已改用后台 Codex 执行。');
     }
 
@@ -475,11 +488,7 @@ export function createChatService({
           // app-server with "already has an active writer". Say so up front
           // instead of burning a turn on a write that cannot land.
           if (selectedSessionId && isDesktopThreadOpen(selectedSessionId)) {
-            const busy = new Error(
-              '这个会话正在桌面 Codex 里打开，桌面占着写入权限，手机后台发不进去。请在桌面结束/关闭该会话后重试，或新开一个会话继续。'
-            );
-            busy.statusCode = 409;
-            throw busy;
+            throw desktopThreadBusyError();
           }
           bridge = backgroundFallbackBridge(
             bridge,

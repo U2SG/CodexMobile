@@ -590,3 +590,26 @@ test('a silent turn is aborted by the idle watchdog', async () => {
     else process.env.CODEXMOBILE_TURN_IDLE_TIMEOUT_MS = previous;
   }
 });
+
+test('an unreachable desktop that still has the thread open refuses instead of running in background', async () => {
+  let ran = false;
+  const { service } = makeChatService({
+    getDesktopBridgeStatus: async () => ({
+      strict: false,
+      connected: false,
+      mode: 'desktop-ipc',
+      capabilities: { sendToOpenDesktopThread: true, backgroundCodex: true }
+    }),
+    isDesktopThreadOpen: (id) => id === 'thread-1',
+    runCodexTurn: async () => {
+      ran = true;
+      return 'thread-1';
+    }
+  });
+
+  await assert.rejects(
+    service.sendChat({ projectId: 'project-1', sessionId: 'thread-1', message: 'desktop hung, thread open' }),
+    (error) => error.statusCode === 409
+  );
+  assert.equal(ran, false);
+});

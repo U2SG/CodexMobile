@@ -13,9 +13,11 @@ export function clearToken() {
 }
 
 // A GET that stalls after a network switch never settles on iOS, which
-// leaves pollers waiting on it forever. Writes keep no deadline: a slow send
-// must not be retried as a duplicate turn.
-const GET_TIMEOUT_MS = 15_000;
+// leaves pollers waiting on it forever. The deadline only has to beat a dead
+// socket, so it sits above the slowest legitimate reads (search, git history,
+// a desktop thread read behind IPC timeouts). Writes keep no deadline: a slow
+// send must not be retried as a duplicate turn.
+const GET_TIMEOUT_MS = 45_000;
 
 function requestSignal(options) {
   const method = String(options.method || 'GET').toUpperCase();
@@ -33,15 +35,21 @@ export async function apiFetch(path, options = {}) {
     ...(options.headers || {})
   };
 
-  const response = await fetch(path, {
-    ...options,
-    headers,
-    signal: requestSignal(options),
-    body:
-      options.body && !(options.body instanceof FormData) && typeof options.body !== 'string'
-        ? JSON.stringify(options.body)
-        : options.body
-  });
+  let response;
+  try {
+    response = await fetch(path, {
+      ...options,
+      headers,
+      signal: requestSignal(options),
+      body:
+        options.body && !(options.body instanceof FormData) && typeof options.body !== 'string'
+          ? JSON.stringify(options.body)
+          : options.body
+    });
+  } catch (error) {
+    if (error?.name === 'TimeoutError') throw new Error('请求超时，请检查网络后重试');
+    throw error;
+  }
 
   const text = await response.text();
   let data = {};
