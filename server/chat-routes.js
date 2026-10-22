@@ -25,6 +25,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import { readBody, sendJson } from './http-utils.js';
 import { killProcessTree } from './process-tree.js';
+import { shellSpawnArgs } from './shell-command.js';
 
 const COMPACT_TIMEOUT_MS = 90_000;
 const COMPACT_PROMPT_LIMIT = 40_000;
@@ -60,11 +61,12 @@ function extractClaudeTurns(jsonl) {
 function runClaudeSummarize(prompt) {
   return new Promise((resolve, reject) => {
     const claudeExe = process.platform === 'win32' ? 'claude.cmd' : 'claude';
-    const child = spawn(claudeExe, ['-p', '--no-session-persistence', '--model', 'haiku'], {
+    const launch = shellSpawnArgs(claudeExe, ['-p', '--no-session-persistence', '--model', 'haiku']);
+    const child = spawn(launch.command, launch.args, {
       cwd: os.tmpdir(),
       env: { ...process.env },
       windowsHide: true,
-      shell: process.platform === 'win32'
+      shell: launch.shell
     });
     let out = '';
     let err = '';

@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import { killProcessTree } from './process-tree.js';
+import { quoteCmdArg, shellSpawnArgs } from './shell-command.js';
 
 const DEFAULT_CODEX_APP_BINARY = '/Applications/Codex.app/Contents/Resources/codex';
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
@@ -214,14 +215,15 @@ export class CodexAppServerClient {
     const args = this.transport.mode === 'desktop-proxy'
       ? ['app-server', 'proxy', '--sock', this.transport.sockPath]
       : ['app-server', '--listen', 'stdio://'];
-    this.child = spawn(resolveCodexBinary(), args, {
+    // On Windows the codex CLI is an npm `.cmd` shim; spawning a bare/`.cmd`
+    // name without a shell throws ENOENT (Node doesn't resolve PATHEXT).
+    const binary = resolveCodexBinary();
+    const launch = shellSpawnArgs(process.platform === 'win32' ? quoteCmdArg(binary) : binary, args);
+    this.child = spawn(launch.command, launch.args, {
       cwd: this.cwd,
       env: this.env,
       stdio: ['pipe', 'pipe', 'pipe'],
-      // On Windows the codex CLI is an npm `.cmd` shim; spawning a bare/`.cmd`
-      // name without a shell throws ENOENT (Node doesn't resolve PATHEXT). The
-      // args are static and space-free, so shell quoting is safe here.
-      shell: process.platform === 'win32',
+      shell: launch.shell,
       windowsHide: true
     });
 
