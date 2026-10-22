@@ -113,12 +113,16 @@ export default function App() {
       })
     );
   };
-  const respondToApproval = (requestId, decision) => {
-    const ws = wsRef.current;
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'approval-response', requestId, ...decision }));
+  // HTTP, not the socket: right after unlock the socket may be a zombie that
+  // still reports OPEN, and a dropped answer left the turn blocked. The sheet
+  // stays up until the server has the answer.
+  const respondToApproval = async (requestId, decision) => {
+    try {
+      await apiFetch('/api/approval-response', { method: 'POST', body: { requestId, ...decision } });
+      dropApprovalRequest({ requestId });
+    } catch (error) {
+      console.warn('[approval] response failed:', error.message);
     }
-    dropApprovalRequest({ requestId });
   };
   const [previewImage, setPreviewImage] = useState(null);
   const [imageIntentConfirmation, setImageIntentConfirmation] = useState(null);

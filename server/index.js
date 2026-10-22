@@ -86,7 +86,7 @@ import { publicVoiceTranscriptionStatus, transcribeAudio } from './voice-transcr
 import { listPendingApprovals } from './approval-pool.js';
 import { publicVoiceSpeechStatus, synthesizeSpeech } from './voice-speaker.js';
 import { publicVoiceRealtimeStatus, startVoiceRealtimeProxy } from './realtime-voice.js';
-import { remoteAddress, sendJson } from './http-utils.js';
+import { readBody, remoteAddress, sendJson } from './http-utils.js';
 
 // Global safety net for AbortError leaks from cancelled turns.
 //
@@ -720,7 +720,29 @@ async function handleApi(req, res, url) {
   }
 
 
+  // HTTP twin of the WS approval-response frame: a tap on a zombie socket
+  // was silently dropped while the sheet closed anyway.
+  if (method === 'POST' && pathname === '/api/approval-response') {
+    const body = await readBody(req);
+    if (!body?.requestId) {
+      sendJson(res, 400, { error: 'requestId is required' });
+      return;
+    }
+    sendJson(res, 200, { resolved: await respondToApproval(body) });
+    return;
+  }
+
   sendJson(res, 404, { error: 'Not found' });
+}
+
+async function respondToApproval(frame) {
+  const { resolveCodexApproval } = await import('./codex-app-server-runner.js');
+  return resolveCodexApproval(frame.requestId, {
+    decision: frame.decision,
+    permissions: frame.permissions,
+    answers: frame.answers,
+    elicitationResponse: frame.elicitationResponse
+  });
 }
 
 async function requestHandler(req, res) {
@@ -852,13 +874,7 @@ async function main() {
       }
       if (frame?.type === 'approval-response' && frame.requestId) {
         try {
-          const { resolveCodexApproval } = await import('./codex-app-server-runner.js');
-          resolveCodexApproval(frame.requestId, {
-            decision: frame.decision,
-            permissions: frame.permissions,
-            answers: frame.answers,
-            elicitationResponse: frame.elicitationResponse
-          });
+          await respondToApproval(frame);
         } catch (error) {
           console.warn('[ws] approval-response handling failed:', error.message);
         }
