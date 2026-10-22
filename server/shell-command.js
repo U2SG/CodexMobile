@@ -13,7 +13,10 @@ export function quoteCmdArg(arg) {
   if (CMD_UNSAFE.test(value)) {
     throw new Error(`Argument cannot be passed safely through cmd.exe: ${JSON.stringify(value.slice(0, 80))}`);
   }
-  return value === '' || NEEDS_QUOTES.test(value) ? `"${value}"` : value;
+  if (value !== '' && !NEEDS_QUOTES.test(value)) return value;
+  // Trailing backslashes would escape the closing quote ("C:\My Dir\" eats
+  // every following argument), so double them.
+  return `"${value.replace(/(\\+)$/, '$1$1')}"`;
 }
 
 // Returns spawn(command, args, { shell }) inputs. `command` is used verbatim

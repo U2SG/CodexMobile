@@ -10,6 +10,11 @@ test('quoteCmdArg quotes only when cmd.exe would split or reinterpret', () => {
   assert.equal(quoteCmdArg(''), '""');
 });
 
+test('quoteCmdArg doubles trailing backslashes so they cannot escape the closing quote', () => {
+  assert.equal(quoteCmdArg('C:\\My Dir\\'), '"C:\\My Dir\\\\"');
+  assert.equal(quoteCmdArg('C:\\NoSpace\\'), 'C:\\NoSpace\\');
+});
+
 test('quoteCmdArg keeps a lone percent sign, which cmd.exe leaves literal', () => {
   assert.equal(quoteCmdArg('C:\\Temp\\100%\\s.json'), 'C:\\Temp\\100%\\s.json');
 });

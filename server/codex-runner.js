@@ -970,11 +970,13 @@ async function runClaudeTurn({ sessionId, draftSessionId, projectPath, message, 
       '--model',
       requestedClaudeModel
     ];
+    // turnId can come from the client; keep it to a plain file-name token.
+    const tempFileTag = String(turnId).replace(/[^\w-]/g, '_');
     // Skill bodies are multi-line markdown: as a command-line arg cmd.exe cut
     // them at the first newline and parsed `| > &` inside them. A file path
     // survives intact (same reason the settings below go through a file).
     if (skillsAppendix) {
-      claudeSkillsTempPath = path.join(os.tmpdir(), `codexmobile-claude-skills-${turnId}.md`);
+      claudeSkillsTempPath = path.join(os.tmpdir(), `codexmobile-claude-skills-${tempFileTag}.md`);
       await fs.writeFile(claudeSkillsTempPath, skillsAppendix, 'utf8');
       args.push('--append-system-prompt-file', claudeSkillsTempPath);
     }
@@ -991,7 +993,7 @@ async function runClaudeTurn({ sessionId, draftSessionId, projectPath, message, 
     if (claudeHooksEnabled() && hookUrl) {
       claudeSettingsTempPath = path.join(
         os.tmpdir(),
-        `codexmobile-claude-settings-${turnId}.json`
+        `codexmobile-claude-settings-${tempFileTag}.json`
       );
       const composed = await buildClaudeSettingsWithApprovalHook(workingDirectory);
       await fs.writeFile(claudeSettingsTempPath, JSON.stringify(composed), 'utf8');
