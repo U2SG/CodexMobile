@@ -595,12 +595,25 @@ async function requireAuth(req, res, pathname = '') {
   return false;
 }
 
+// Backpressure for a phone on a slow link: assistant-update frames carry the
+// whole reply so far, so dropping one while the socket is backed up loses
+// nothing — the next frame supersedes it. A socket that backs up far beyond
+// that is not draining at all; cut it so the client reconnects and refetches.
+const SKIP_SUPERSEDED_FRAMES_BYTES = 1024 * 1024;
+const TERMINATE_BACKED_UP_SOCKET_BYTES = 16 * 1024 * 1024;
+
 function broadcast(payload) {
   const serialized = JSON.stringify(payload);
+  const superseded = payload?.type === 'assistant-update' && payload.done !== true;
   for (const socket of sockets) {
-    if (socket.readyState === socket.OPEN) {
-      socket.send(serialized);
+    if (socket.readyState !== socket.OPEN) continue;
+    if (socket.bufferedAmount > TERMINATE_BACKED_UP_SOCKET_BYTES) {
+      sockets.delete(socket);
+      socket.terminate();
+      continue;
     }
+    if (superseded && socket.bufferedAmount > SKIP_SUPERSEDED_FRAMES_BYTES) continue;
+    socket.send(serialized);
   }
 }
 
