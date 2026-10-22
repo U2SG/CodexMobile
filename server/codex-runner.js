@@ -1282,11 +1282,26 @@ async function runClaudeTurn({ sessionId, draftSessionId, projectPath, message, 
           abortController,
           ...(resumingSession ? { resume: currentSessionId } : { sessionId: currentSessionId }),
           ...(normalizedReasoningEffort ? { effort: normalizedReasoningEffort === 'minimal' ? 'low' : normalizedReasoningEffort } : {}),
-          ...(skillsAppendix ? { systemPrompt: { type: 'preset', preset: 'claude_code', append: skillsAppendix } } : {}),
+          // The SDK's own default is a minimal prompt; `claude -p` uses the
+          // full Claude Code one, so ask for that preset explicitly.
+          systemPrompt: { type: 'preset', preset: 'claude_code', ...(skillsAppendix ? { append: skillsAppendix } : {}) },
           ...approvals,
-          stderr: (data) => {
-            stderr += data;
-            if (stderr.length > 64_000) stderr = stderr.slice(-32_000);
+          // Spawn the bundled claude.exe ourselves (no shell) so the child is
+          // registered on the run: abort and shutdown then take the whole
+          // process tree down with taskkill, as on the CLI path.
+          spawnClaudeCodeProcess: ({ command, args: sdkArgs, cwd: childCwd, env, signal }) => {
+            const child = spawn(command, sdkArgs, { cwd: childCwd, env, signal, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+            child.on('error', (err) => {
+              if (err?.name !== 'AbortError' && err?.code !== 'ABORT_ERR') {
+                console.error('[claude] sdk child error:', err.message || err);
+              }
+            });
+            child.stderr.on('data', (chunk) => {
+              stderr += chunk.toString();
+              if (stderr.length > 64_000) stderr = stderr.slice(-32_000);
+            });
+            run.process = child;
+            return child;
           }
         }
       });
