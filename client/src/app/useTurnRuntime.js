@@ -1,5 +1,5 @@
 // useTurnRuntime — owns the turn-tracking state machine that
-// useAppWebSocket, useTurnSubmission, and the voice-dialog effects all
+// useAppEventStream, useTurnSubmission, and the voice-dialog effects all
 // share. Pure refactor (Stage 2 R7): the same state, the same refs, the
 // same handler logic — extracted into one hook so callers don't need to
 // know about runningByIdRef / activePollsRef / turnRefreshTimersRef

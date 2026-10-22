@@ -1,5 +1,5 @@
 import { lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { AUTH_LOST_EVENT, apiFetch, clearToken, getToken, setToken, websocketUrl } from './api.js';
+import { AUTH_LOST_EVENT, apiFetch, clearToken, getToken, setToken } from './api.js';
 import { agentMeta } from './agent-meta.js';
 import { Composer } from './composer/Composer.jsx';
 import { ConnectionRecoveryCard } from './panels/ConnectionRecoveryCard.jsx';
@@ -33,7 +33,7 @@ import {
 } from './selection-persistence.js';
 import { canGuideCurrentTask as canGuideCurrentTaskForSend } from './runtime-capabilities.js';
 import { useAppBootstrap } from './app/useAppBootstrap.js';
-import { useAppWebSocket } from './app/useAppWebSocket.js';
+import { useAppEventStream } from './app/useAppEventStream.js';
 import ApprovalSheet from './ApprovalSheet.jsx';
 import { useFileUploads } from './app/useFileUploads.js';
 import { useSessionActions } from './app/useSessionActions.js';
@@ -179,7 +179,6 @@ export default function App() {
     }, 300);
     return () => window.clearTimeout(timer);
   }, [input]);
-  const wsRef = useRef(null);
   const selectedProjectRef = useRef(null);
   const selectedSessionRef = useRef(null);
   const sessionsByProjectRef = useRef({});
@@ -396,10 +395,9 @@ export default function App() {
   const [planModeActive, setPlanModeActive] = useState(false);
   const [forceImageActive, setForceImageActive] = useState(false);
 
-  useAppWebSocket({
+  useAppEventStream({
     authenticated,
     defaultStatus: DEFAULT_STATUS,
-    wsRef,
     selectedProjectRef,
     selectedSessionRef,
     sessionsByProjectRef,
