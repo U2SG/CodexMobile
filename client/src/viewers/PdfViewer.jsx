@@ -1,7 +1,10 @@
 // PDF viewer — thin wrapper around PdfPreview so the shell mounts it via
 // the same { id, loader, Component } contract every other viewer uses.
 
-import { PdfPreview } from '../app/PdfPreview.jsx';
+import { Suspense, lazy } from 'react';
+
+// pdfjs is large; load it only when a PDF is actually opened.
+const PdfPreview = lazy(() => import('../app/PdfPreview.jsx').then((module) => ({ default: module.PdfPreview })));
 
 function matches(pathLower, contentTypeLower) {
   if (contentTypeLower.includes('pdf')) return true;
@@ -14,7 +17,11 @@ async function loader(blob) {
 }
 
 function Component({ data, fileUrl }) {
-  return <PdfPreview data={data} fileUrl={fileUrl || ''} />;
+  return (
+    <Suspense fallback={null}>
+      <PdfPreview data={data} fileUrl={fileUrl || ''} />
+    </Suspense>
+  );
 }
 
 export const PdfViewer = {
