@@ -752,8 +752,27 @@ const CLAUDE_MODEL_ALIASES = new Set(['sonnet', 'opus', 'fable', 'haiku']);
 // but later listed under project B), which makes `--resume` fail with
 // "No conversation found". Returns the original cwd recorded inside the
 // session file, or null if the session is nowhere on disk.
+// A session's recorded cwd never changes once written, and the lookup opens a
+// candidate file in every project dir — cache hits only (a miss may be a
+// session whose file has not been flushed yet).
+const claudeSessionCwdCache = new Map();
+const CLAUDE_SESSION_CWD_CACHE_MAX = 500;
+
 async function findClaudeSessionCwd(sessionId) {
   if (!sessionId) return null;
+  const cached = claudeSessionCwdCache.get(sessionId);
+  if (cached) return cached;
+  const cwd = await scanClaudeSessionCwd(sessionId);
+  if (cwd) {
+    if (claudeSessionCwdCache.size >= CLAUDE_SESSION_CWD_CACHE_MAX) {
+      claudeSessionCwdCache.delete(claudeSessionCwdCache.keys().next().value);
+    }
+    claudeSessionCwdCache.set(sessionId, cwd);
+  }
+  return cwd;
+}
+
+async function scanClaudeSessionCwd(sessionId) {
   const claudeHome = process.env.CLAUDE_HOME || path.join(os.homedir(), '.claude');
   const projectsRoot = path.join(claudeHome, 'projects');
   let entries;

@@ -26,7 +26,13 @@ function dedupePath(value) {
     .join(path.delimiter);
 }
 
+// libuv's default 4 threads are shared by every fs call; the session scans
+// (~1k jsonl files) queued turn-start reads behind them. Must be set before
+// the child's first fs call, hence here rather than in server/index.js.
 function childEnv() {
+  if (!process.env.UV_THREADPOOL_SIZE) {
+    process.env.UV_THREADPOOL_SIZE = '16';
+  }
   if (process.platform !== 'win32') {
     return process.env;
   }
