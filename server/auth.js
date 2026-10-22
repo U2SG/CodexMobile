@@ -34,10 +34,20 @@ async function readState() {
   }
 }
 
+// Atomic: a crash mid-write must not truncate the file and un-pair every phone.
+let writeSeq = 0;
 async function writeState() {
   await fs.mkdir(DATA_DIR, { recursive: true });
-  await fs.writeFile(STATE_FILE, JSON.stringify(authState, null, 2), 'utf8');
+  const tmp = `${STATE_FILE}.tmp-${process.pid}-${++writeSeq}`;
+  await fs.writeFile(tmp, JSON.stringify(authState, null, 2), 'utf8');
+  await fs.rename(tmp, STATE_FILE);
 }
+
+// lastSeenAt is informational; persisting it on every authenticated request
+// (polls run every ~1s) churned the disk and let a transient EBUSY reject
+// verifyToken. Persist at most once a minute per device, never throw.
+const LAST_SEEN_PERSIST_MS = 60_000;
+const lastPersistedAt = new Map();
 
 async function readFixedPairingCode() {
   const envCode = String(process.env.CODEXMOBILE_PAIRING_CODE || '').trim();
@@ -103,9 +113,19 @@ export async function verifyToken(token, metadata = {}) {
     return false;
   }
 
-  device.lastSeenAt = new Date().toISOString();
+  const now = Date.now();
+  const previousAddress = device.lastRemoteAddress;
+  device.lastSeenAt = new Date(now).toISOString();
   device.lastRemoteAddress = metadata.remoteAddress || device.lastRemoteAddress || null;
-  await writeState();
+  const stale = now - (lastPersistedAt.get(device.id) || 0) >= LAST_SEEN_PERSIST_MS;
+  if (stale || device.lastRemoteAddress !== previousAddress) {
+    lastPersistedAt.set(device.id, now);
+    try {
+      await writeState();
+    } catch (error) {
+      console.warn('[auth] Failed to persist lastSeenAt:', error.message);
+    }
+  }
   return true;
 }
 

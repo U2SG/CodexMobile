@@ -867,32 +867,6 @@ function acquireClaudeSpawnGate() {
 }
 
 async function runClaudeTurn({ sessionId, draftSessionId, projectPath, message, model, reasoningEffort, permissionMode, selectedSkills = [], turnId: providedTurnId }, emit) {
-  // If the session was created under a different cwd than the project we were
-  // asked to use, Claude's `--resume` will fail with "No conversation found".
-  // Look up the session's true cwd on disk and prefer it when present.
-  const resumeCandidateId = sessionId || (draftSessionId && !String(draftSessionId).startsWith('draft-') ? draftSessionId : null);
-  let effectiveProjectPath = projectPath;
-  if (resumeCandidateId) {
-    const recordedCwd = await findClaudeSessionCwd(resumeCandidateId).catch((error) => {
-      console.warn(`[claude] findClaudeSessionCwd threw for ${resumeCandidateId}: ${error.message}`);
-      return null;
-    });
-    console.log(`[claude] resume lookup session=${resumeCandidateId} requested=${projectPath} recorded=${recordedCwd}`);
-    if (recordedCwd && !samePath(recordedCwd, projectPath)) {
-      // The session was created under a different cwd than the requested
-      // project. Verify the recorded cwd still exists before redirecting —
-      // otherwise the spawn fails with a cryptic ENOENT on cwd that's harder
-      // to diagnose than the original "No conversation found" from --resume.
-      const recordedExists = await fs.stat(recordedCwd).then((st) => st.isDirectory()).catch(() => false);
-      if (recordedExists) {
-        console.log(`[claude] redirect cwd for resume session=${resumeCandidateId} requested=${projectPath} actual=${recordedCwd}`);
-        effectiveProjectPath = recordedCwd;
-      } else {
-        console.warn(`[claude] resume session=${resumeCandidateId} recordedCwd missing, keeping requested cwd: ${recordedCwd}`);
-      }
-    }
-  }
-  const workingDirectory = await ensureAsciiWorkingDirectory(effectiveProjectPath);
   const normalizedReasoningEffort = normalizeReasoningEffort(reasoningEffort);
   const abortController = new AbortController();
   const turnId = providedTurnId || crypto.randomUUID();
@@ -929,65 +903,94 @@ async function runClaudeTurn({ sessionId, draftSessionId, projectPath, message, 
     });
   }
   emitStatus(emit, { sessionId: currentSessionId, turnId, kind: 'reasoning', status: 'running', label: '正在思考' });
-
-  const skillsAppendix = await buildClaudeSkillsAppendix(selectedSkills);
-  const requestedClaudeModel = resolveClaudeModel(model);
-  const args = [
-    '-p',
-    '--verbose',
-    '--output-format=stream-json',
-    '--include-partial-messages',
-    '--permission-mode',
-    mapClaudePermissionMode(permissionMode),
-    '--model',
-    requestedClaudeModel
-  ];
-  if (skillsAppendix) {
-    args.push('--append-system-prompt', skillsAppendix);
-  }
-  // Install the PreToolUse hook only when the toggle is on AND the server
-  // exposed its loopback URL. The hook script itself fails open if the env
-  // is missing, but skipping the flag entirely is cleaner.
-  //
-  // We write the settings to a temp file rather than inlining the JSON on
-  // the command line because spawning claude with `shell: true` on Windows
-  // re-parses the arg list through cmd.exe, which eats the internal double
-  // quotes and produces "Invalid JSON provided to --settings". A path arg
-  // survives that round trip intact.
-  const hookUrl = process.env.CODEXMOBILE_INTERNAL_HOOK_URL || '';
+  // Everything that can throw runs inside the try so a setup failure (disk,
+  // temp dir, skills read) surfaces as chat-error and still clears activeRuns.
+  // The resume lookup scans every project dir, so chat-started goes out first.
   let claudeSettingsTempPath = null;
-  if (claudeHooksEnabled() && hookUrl) {
-    claudeSettingsTempPath = path.join(
-      os.tmpdir(),
-      `codexmobile-claude-settings-${turnId}.json`
-    );
-    const composed = await buildClaudeSettingsWithApprovalHook(workingDirectory);
-    await fs.writeFile(claudeSettingsTempPath, JSON.stringify(composed), 'utf8');
-    args.push('--settings', claudeSettingsTempPath);
-  }
-  if (normalizedReasoningEffort) {
-    args.push('--effort', normalizedReasoningEffort);
-  }
-  if (sessionId || (draftSessionId && !String(draftSessionId).startsWith('draft-'))) {
-    args.push('--resume', currentSessionId);
-  } else {
-    args.push('--session-id', currentSessionId);
-  }
-  const promptInput = message;
-
-  // Retry once when Claude CLI exits with a `~/.claude.json` parse error.
-  // Two concurrent Claude processes (this server's sibling spawn, or the
-  // user's own Claude Code session) can race on the non-atomic config-file
-  // write and leave it empty/partial. Claude rewrites a fresh default on the
-  // failure path, so an immediate retry typically succeeds. Skip the retry
-  // when we already streamed assistant text (would double-emit) or when the
-  // user aborted.
-  const MAX_CLAUDE_ATTEMPTS = 2;
-  let attemptNumber = 0;
-  let stderr = '';
-  let exitCode = null;
-
   try {
+    // If the session was created under a different cwd than the project we were
+    // asked to use, Claude's `--resume` will fail with "No conversation found".
+    // Look up the session's true cwd on disk and prefer it when present.
+    const resumeCandidateId = sessionId || (draftSessionId && !String(draftSessionId).startsWith('draft-') ? draftSessionId : null);
+    let effectiveProjectPath = projectPath;
+    if (resumeCandidateId) {
+      const recordedCwd = await findClaudeSessionCwd(resumeCandidateId).catch((error) => {
+        console.warn(`[claude] findClaudeSessionCwd threw for ${resumeCandidateId}: ${error.message}`);
+        return null;
+      });
+      console.log(`[claude] resume lookup session=${resumeCandidateId} requested=${projectPath} recorded=${recordedCwd}`);
+      if (recordedCwd && !samePath(recordedCwd, projectPath)) {
+        // The session was created under a different cwd than the requested
+        // project. Verify the recorded cwd still exists before redirecting —
+        // otherwise the spawn fails with a cryptic ENOENT on cwd that's harder
+        // to diagnose than the original "No conversation found" from --resume.
+        const recordedExists = await fs.stat(recordedCwd).then((st) => st.isDirectory()).catch(() => false);
+        if (recordedExists) {
+          console.log(`[claude] redirect cwd for resume session=${resumeCandidateId} requested=${projectPath} actual=${recordedCwd}`);
+          effectiveProjectPath = recordedCwd;
+        } else {
+          console.warn(`[claude] resume session=${resumeCandidateId} recordedCwd missing, keeping requested cwd: ${recordedCwd}`);
+        }
+      }
+    }
+    const workingDirectory = await ensureAsciiWorkingDirectory(effectiveProjectPath);
+
+    const skillsAppendix = await buildClaudeSkillsAppendix(selectedSkills);
+    const requestedClaudeModel = resolveClaudeModel(model);
+    const args = [
+      '-p',
+      '--verbose',
+      '--output-format=stream-json',
+      '--include-partial-messages',
+      '--permission-mode',
+      mapClaudePermissionMode(permissionMode),
+      '--model',
+      requestedClaudeModel
+    ];
+    if (skillsAppendix) {
+      args.push('--append-system-prompt', skillsAppendix);
+    }
+    // Install the PreToolUse hook only when the toggle is on AND the server
+    // exposed its loopback URL. The hook script itself fails open if the env
+    // is missing, but skipping the flag entirely is cleaner.
+    //
+    // We write the settings to a temp file rather than inlining the JSON on
+    // the command line because spawning claude with `shell: true` on Windows
+    // re-parses the arg list through cmd.exe, which eats the internal double
+    // quotes and produces "Invalid JSON provided to --settings". A path arg
+    // survives that round trip intact.
+    const hookUrl = process.env.CODEXMOBILE_INTERNAL_HOOK_URL || '';
+    if (claudeHooksEnabled() && hookUrl) {
+      claudeSettingsTempPath = path.join(
+        os.tmpdir(),
+        `codexmobile-claude-settings-${turnId}.json`
+      );
+      const composed = await buildClaudeSettingsWithApprovalHook(workingDirectory);
+      await fs.writeFile(claudeSettingsTempPath, JSON.stringify(composed), 'utf8');
+      args.push('--settings', claudeSettingsTempPath);
+    }
+    if (normalizedReasoningEffort) {
+      args.push('--effort', normalizedReasoningEffort);
+    }
+    if (sessionId || (draftSessionId && !String(draftSessionId).startsWith('draft-'))) {
+      args.push('--resume', currentSessionId);
+    } else {
+      args.push('--session-id', currentSessionId);
+    }
+    const promptInput = message;
+
+    // Retry once when Claude CLI exits with a `~/.claude.json` parse error.
+    // Two concurrent Claude processes (this server's sibling spawn, or the
+    // user's own Claude Code session) can race on the non-atomic config-file
+    // write and leave it empty/partial. Claude rewrites a fresh default on the
+    // failure path, so an immediate retry typically succeeds. Skip the retry
+    // when we already streamed assistant text (would double-emit) or when the
+    // user aborted.
+    const MAX_CLAUDE_ATTEMPTS = 2;
+    let attemptNumber = 0;
+    let stderr = '';
+    let exitCode = null;
+
    while (true) {
     attemptNumber++;
     stderr = '';

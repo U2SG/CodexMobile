@@ -503,9 +503,14 @@ export async function runCodexTurnViaAppServer(args, emit, {
     // turn/start returns after admission; the stream of notifications drives
     // the rest of the turn. Wait for turn/completed (or an abort/error) without
     // missing an abort that happened before this listener was installed.
+    // If the app-server process dies mid-turn no turn/completed ever arrives;
+    // without the closed branch this await (and the conversation queue) hangs.
     const completion = await Promise.race([
       turnCompleted,
-      waitForAbort(abortController.signal)
+      waitForAbort(abortController.signal),
+      client.closed.then((result) => {
+        throw result?.error || new Error('Codex app-server exited before the turn completed');
+      })
     ]);
 
     if (!state.failed) {

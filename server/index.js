@@ -748,8 +748,10 @@ async function main() {
   claudeAutoTitler.schedule();
 
   const server = http.createServer(requestHandler);
-  const wss = new WebSocketServer({ noServer: true });
-  const realtimeWss = new WebSocketServer({ noServer: true });
+  // Client frames are tiny JSON control messages; ws's 100 MiB default lets a
+  // single bad frame balloon memory. Realtime voice carries audio chunks.
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
+  const realtimeWss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 });
 
   // Heartbeat: an iOS PWA frozen in the background leaves a half-dead TCP
   // connection that never emits 'close'. Every 25s, terminate sockets that
@@ -778,7 +780,20 @@ async function main() {
   }, HEARTBEAT_INTERVAL_MS);
   heartbeatTimer.unref();
 
+  // A rejected promise or an unlistened 'error' here is process-fatal (see the
+  // unhandledRejection handler above), so every await is contained and both
+  // the raw socket and the upgraded ws get an error listener.
   const handleUpgrade = async (req, socket, head) => {
+    socket.on('error', () => socket.destroy());
+    try {
+      await upgradeSocket(req, socket, head);
+    } catch (error) {
+      console.warn('[ws] upgrade failed:', error.message);
+      socket.destroy();
+    }
+  };
+
+  const upgradeSocket = async (req, socket, head) => {
     const url = new URL(req.url || '/', `http://${req.headers.host || `127.0.0.1:${PORT}`}`);
     if (url.pathname !== '/ws' && url.pathname !== '/ws/realtime') {
       socket.destroy();
@@ -800,54 +815,62 @@ async function main() {
       return;
     }
 
-    wss.handleUpgrade(req, socket, head, async (ws) => {
-      sockets.add(ws);
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      onSocketOpen(ws).catch((error) => {
+        console.warn('[ws] connection setup failed:', error.message);
+        ws.terminate();
+      });
+    });
+  };
+
+  const onSocketOpen = async (ws) => {
+    sockets.add(ws);
+    ws.isAlive = true;
+    ws.on('error', () => ws.terminate());
+    ws.on('pong', () => {
       ws.isAlive = true;
-      ws.on('pong', () => {
-        ws.isAlive = true;
-      });
-      ws.on('close', () => sockets.delete(ws));
-      ws.on('message', async (raw) => {
-        let frame;
+    });
+    ws.on('close', () => sockets.delete(ws));
+    ws.on('message', async (raw) => {
+      let frame;
+      try {
+        frame = JSON.parse(raw.toString('utf8'));
+      } catch {
+        return;
+      }
+      if (frame?.type === 'liveness-probe' && typeof frame.id === 'string' && frame.id.length <= 128) {
         try {
-          frame = JSON.parse(raw.toString('utf8'));
+          ws.send(JSON.stringify({
+            type: 'liveness-ack',
+            id: frame.id,
+            activeRuns: activeRunsSnapshot()
+          }));
         } catch {
-          return;
+          // A dead socket will be removed by close/heartbeat handling.
         }
-        if (frame?.type === 'liveness-probe' && typeof frame.id === 'string' && frame.id.length <= 128) {
-          try {
-            ws.send(JSON.stringify({
-              type: 'liveness-ack',
-              id: frame.id,
-              activeRuns: activeRunsSnapshot()
-            }));
-          } catch {
-            // A dead socket will be removed by close/heartbeat handling.
-          }
-          return;
+        return;
+      }
+      if (frame?.type === 'approval-response' && frame.requestId) {
+        try {
+          const { resolveCodexApproval } = await import('./codex-app-server-runner.js');
+          resolveCodexApproval(frame.requestId, {
+            decision: frame.decision,
+            permissions: frame.permissions,
+            answers: frame.answers,
+            elicitationResponse: frame.elicitationResponse
+          });
+        } catch (error) {
+          console.warn('[ws] approval-response handling failed:', error.message);
         }
-        if (frame?.type === 'approval-response' && frame.requestId) {
-          try {
-            const { resolveCodexApproval } = await import('./codex-app-server-runner.js');
-            resolveCodexApproval(frame.requestId, {
-              decision: frame.decision,
-              permissions: frame.permissions,
-              answers: frame.answers,
-              elicitationResponse: frame.elicitationResponse
-            });
-          } catch (error) {
-            console.warn('[ws] approval-response handling failed:', error.message);
-          }
-        }
-      });
-      ws.send(JSON.stringify({ type: 'connected', status: await publicStatus(true) }));
-      for (const approval of listPendingApprovals()) {
-        ws.send(JSON.stringify({
-          type: 'approval-request',
-          ...approval
-        }));
       }
     });
+    ws.send(JSON.stringify({ type: 'connected', status: await publicStatus(true) }));
+    for (const approval of listPendingApprovals()) {
+      ws.send(JSON.stringify({
+        type: 'approval-request',
+        ...approval
+      }));
+    }
   };
 
   server.on('upgrade', handleUpgrade);

@@ -283,6 +283,7 @@ export function createChatService({
       rememberLiveSession,
       emitJobEvent,
       scheduleAutoNameCompletedSession,
+      abortTurn: abortCodexTurn,
       onQueueDrained: () => setTimeout(() => runNextQueuedChat(queueKey), 0)
     });
   }
@@ -409,6 +410,14 @@ export function createChatService({
         latency: turnLatencyDurations(latencyTrace),
         desktopBridge: bridge
       };
+    }
+
+    // The probe already says the desktop is unreachable (closed, or hung so
+    // the probe timed out). Going through IPC anyway costs a connect timeout
+    // plus an initialize timeout (~30s) before failing; go straight to the
+    // background runner instead.
+    if (bridge?.mode === 'desktop-ipc' && bridge.connected === false && desktopIpcCanUseBackgroundFallback(bridge)) {
+      bridge = backgroundFallbackBridge(bridge, '桌面端 Codex 当前未连接，已改用后台 Codex 执行。');
     }
 
     if (bridge?.mode === 'desktop-ipc' && !imagePrompt) {
