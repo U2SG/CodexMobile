@@ -18,7 +18,7 @@ export { getClaudeHookSecret };
 const CLAUDE_APPROVAL_PATH = '/api/internal/claude-approval';
 const TIMEOUT_MS = 5 * 60 * 1000;
 
-function shapeClaudeDecision(uiDecision) {
+export function shapeClaudeDecision(uiDecision) {
   const decision = uiDecision?.decision || 'denied';
   // PreToolUse hookSpecificOutput accepts allow | deny | ask. Both
   // "approved" and "approved_for_session" map to allow — Claude's hook
@@ -50,7 +50,7 @@ function shapeClaudeDecision(uiDecision) {
 // that into the only headless-supported shape: PreToolUse `allow` carrying
 // `updatedInput.answers`, which Claude reads as the tool result and continues.
 // Verified live against `claude -p` (sonnet) on 2026-05-31.
-function shapeClaudeQuestionDecision(uiDecision, requestParams) {
+export function shapeClaudeQuestionDecision(uiDecision, requestParams) {
   const decision = uiDecision?.decision || 'denied';
   if (decision === 'denied' || decision === 'abort') {
     return {
@@ -71,7 +71,7 @@ function shapeClaudeQuestionDecision(uiDecision, requestParams) {
   };
 }
 
-function timedOutResponse() {
+export function timedOutResponse() {
   return {
     permissionDecision: 'deny',
     permissionDecisionReason: 'CodexMobile 审批 5 分钟无回应，默认拒绝'
