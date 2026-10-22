@@ -116,12 +116,20 @@ export default function App() {
   // HTTP, not the socket: right after unlock the socket may be a zombie that
   // still reports OPEN, and a dropped answer left the turn blocked. The sheet
   // stays up until the server has the answer.
+  // Resolving is idempotent server-side, so a bounded POST that the user can
+  // simply re-tap is safe.
+  const [approvalError, setApprovalError] = useState(null);
   const respondToApproval = async (requestId, decision) => {
+    setApprovalError(null);
     try {
-      await apiFetch('/api/approval-response', { method: 'POST', body: { requestId, ...decision } });
+      await apiFetch('/api/approval-response', {
+        method: 'POST',
+        body: { requestId, ...decision },
+        signal: AbortSignal.timeout?.(15_000)
+      });
       dropApprovalRequest({ requestId });
     } catch (error) {
-      console.warn('[approval] response failed:', error.message);
+      setApprovalError({ requestId, message: `提交失败，请重试：${error.message}` });
     }
   };
   const [previewImage, setPreviewImage] = useState(null);
@@ -804,7 +812,7 @@ export default function App() {
         onSelect={handlePickWorktree}
         onClose={() => setWorktreePicker(null)}
       />
-      <ApprovalSheet requests={approvalRequests} onRespond={respondToApproval} />
+      <ApprovalSheet requests={approvalRequests} onRespond={respondToApproval} error={approvalError} />
     </div>
   );
 }

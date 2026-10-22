@@ -282,15 +282,29 @@ export function runQueuedHeadlessChatJob({
   // would otherwise hold state.running forever and wedge this conversation's
   // queue until restart. Any event re-arms it; long silent tool runs are why
   // the default is generous.
+  // A running tool call (a 40-minute build) is legitimately silent until its
+  // result arrives, so the watchdog only fires when no tool call is open.
   let idleTimer = null;
+  const openToolCalls = new Set();
   const armIdleWatchdog = () => {
     if (!abortTurn || !idleTimeoutMs) return;
     clearTimeout(idleTimer);
     idleTimer = setTimeout(() => {
+      if (openToolCalls.size) {
+        armIdleWatchdog();
+        return;
+      }
       console.warn(`[chat] turn ${job.turnId} silent for ${idleTimeoutMs}ms, aborting`);
-      abortTurn(job.turnId);
+      // Not registered yet (still in pre-spawn setup): try again next window
+      // rather than giving up and leaving the queue wedged.
+      if (!abortTurn(job.turnId)) armIdleWatchdog();
     }, idleTimeoutMs);
     idleTimer.unref?.();
+  };
+  const trackToolCall = (payload) => {
+    if (payload?.type !== 'activity-update' || !payload.messageId) return;
+    if (payload.status === 'running') openToolCalls.add(payload.messageId);
+    else openToolCalls.delete(payload.messageId);
   };
   const registeredSessionIds = new Set();
 
@@ -329,6 +343,7 @@ export function runQueuedHeadlessChatJob({
   }
 
   const onEvent = (payload) => {
+    trackToolCall(payload);
     armIdleWatchdog();
     const eventPayload = { ...payload, source: payload?.source || 'headless-local' };
     if (eventPayload.sessionId) {
@@ -390,16 +405,26 @@ export function runQueuedHeadlessChatJob({
         userMessage: job.displayMessage
       });
     }
-  }).catch((error) => {
+  }, (error) => {
     // A runner that throws instead of emitting chat-error (setup failure
     // before its own catch) must not become a process-fatal unhandledRejection.
+    // Same event pair the runners send, so the status row stops spinning.
+    // (Second .then argument: a throw in the success handler above must not
+    // turn a completed turn into a failed one.)
     console.error('[chat] Turn runner failed:', error);
+    const failedSessionId = state.sessionId || sessionId || job.draftSessionId || null;
+    const message = error?.message || String(error);
     onEvent({
-      type: 'chat-error',
-      sessionId: state.sessionId || sessionId || job.draftSessionId || null,
+      type: 'status-update',
+      sessionId: failedSessionId,
       turnId: job.turnId,
-      error: error?.message || String(error)
+      kind: 'turn',
+      status: 'failed',
+      label: '任务失败',
+      detail: message,
+      timestamp: new Date().toISOString()
     });
+    onEvent({ type: 'chat-error', sessionId: failedSessionId, turnId: job.turnId, error: message });
   }).finally(async () => {
     clearTimeout(idleTimer);
     try {

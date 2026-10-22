@@ -923,9 +923,10 @@ async function runClaudeTurn({ sessionId, draftSessionId, projectPath, message, 
     });
   }
   emitStatus(emit, { sessionId: currentSessionId, turnId, kind: 'reasoning', status: 'running', label: '正在思考' });
-  // Everything that can throw runs inside the try so a setup failure (disk,
-  // temp dir, skills read) surfaces as chat-error and still clears activeRuns.
-  // The resume lookup scans every project dir, so chat-started goes out first.
+  // Everything that can throw runs inside the try/finally so a setup failure
+  // (disk, temp dir, skills read) still clears activeRuns; the rejection is
+  // turned into chat-error by the delivery layer. The resume lookup scans
+  // every project dir, so chat-started goes out first.
   let claudeSettingsTempPath = null;
   try {
     // If the session was created under a different cwd than the project we were

@@ -17,8 +17,7 @@ import { sameUserMessageContent } from '../chat/message-identity.js';
 import { createAssistantStreamBuffer } from '../chat/assistant-stream-buffer.js';
 import { finishClientTurnLatency, markClientTurnLatency } from '../turn-latency.js';
 import { createBackoff } from './ws-backoff.js';
-import { mergeLiveSelectedThreadMessages } from '../session-live-refresh.js';
-import { isDraftSession, sessionMessagesPath } from './session-utils.js';
+import { sessionMessagesPath } from './session-utils.js';
 
 export function useAppWebSocket({
   authenticated,
@@ -73,7 +72,6 @@ export function useAppWebSocket({
     // CONNECTING with no close event; nothing else reaps that state.
     const CONNECT_TIMEOUT_MS = 10_000;
     let connectTimer = null;
-    let hasConnected = false;
     let lastFrameAt = Date.now();
     const socketLooksStale = () => Date.now() - lastFrameAt > HEARTBEAT_STALE_MS;
 
@@ -175,21 +173,6 @@ export function useAppWebSocket({
       setMessages((current) => upsertAssistantMessage(current, payload));
     }
 
-    // Frames sent while the socket was down are not replayed. After a
-    // reconnect, pull the open conversation once so tool/activity rows from
-    // the gap appear now instead of when the turn finishes.
-    const catchUpSelectedSession = () => {
-      const session = selectedSessionRef.current;
-      if (!session?.id || isDraftSession(session)) return;
-      const sessionId = session.id;
-      apiFetch(sessionMessagesPath(sessionId))
-        .then((data) => {
-          if (selectedSessionRef.current?.id !== sessionId || !Array.isArray(data?.messages)) return;
-          setMessages((current) => mergeLiveSelectedThreadMessages(current, data.messages));
-        })
-        .catch(() => null);
-    };
-
     const connect = () => {
       setConnectionState('connecting');
       const ws = new WebSocket(websocketUrl());
@@ -262,8 +245,6 @@ export function useAppWebSocket({
           setStatus(payload.status || defaultStatus);
           setConnectionState(payload.status?.connected ? 'connected' : 'disconnected');
           syncActiveRunsFromStatus(payload.status || defaultStatus);
-          if (hasConnected) catchUpSelectedSession();
-          hasConnected = true;
           return;
         }
         if (payload.type === 'chat-started') {

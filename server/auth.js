@@ -35,12 +35,24 @@ async function readState() {
 }
 
 // Atomic: a crash mid-write must not truncate the file and un-pair every phone.
+// Serialized: an older snapshot finishing its rename after a newer one (a
+// lastSeenAt write racing pairDevice) would drop the newly paired device.
+let writeChain = Promise.resolve();
 let writeSeq = 0;
-async function writeState() {
-  await fs.mkdir(DATA_DIR, { recursive: true });
-  const tmp = `${STATE_FILE}.tmp-${process.pid}-${++writeSeq}`;
-  await fs.writeFile(tmp, JSON.stringify(authState, null, 2), 'utf8');
-  await fs.rename(tmp, STATE_FILE);
+function writeState() {
+  const run = writeChain.then(async () => {
+    await fs.mkdir(DATA_DIR, { recursive: true });
+    const tmp = `${STATE_FILE}.tmp-${process.pid}-${++writeSeq}`;
+    try {
+      await fs.writeFile(tmp, JSON.stringify(authState, null, 2), 'utf8');
+      await fs.rename(tmp, STATE_FILE);
+    } catch (error) {
+      await fs.unlink(tmp).catch(() => null);
+      throw error;
+    }
+  });
+  writeChain = run.catch(() => null);
+  return run;
 }
 
 // lastSeenAt is informational; persisting it on every authenticated request

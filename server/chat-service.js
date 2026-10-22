@@ -427,7 +427,7 @@ export function createChatService({
     // A thread the desktop still has open keeps its writer lock even while the
     // desktop is hung, so refuse up front just like the IPC fallback below.
     if (bridge?.mode === 'desktop-ipc' && bridge.connected === false && desktopIpcCanUseBackgroundFallback(bridge)) {
-      if (selectedSessionId && isDesktopThreadOpen(selectedSessionId)) {
+      if (!imagePrompt && selectedSessionId && isDesktopThreadOpen(selectedSessionId)) {
         throw desktopThreadBusyError();
       }
       bridge = backgroundFallbackBridge(bridge, '桌面端 Codex 当前未连接，已改用后台 Codex 执行。');

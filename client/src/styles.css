@@ -7671,6 +7671,12 @@ button {
   color: var(--muted, #888);
 }
 
+.approval-sheet__error {
+  margin: 0 0 8px;
+  color: var(--danger);
+  font-size: 13px;
+}
+
 .approval-sheet__body {
   font-size: var(--fs-label);
   line-height: 1.5;
