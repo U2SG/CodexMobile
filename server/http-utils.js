@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { constants as zlibConstants, gzip, gzipSync } from 'node:zlib';
 
@@ -49,12 +50,13 @@ export function sendStaticContent(req, res, status, content, headers, ext, {
 // level so a big page doesn't stall the event loop.
 const JSON_GZIP_MIN_BYTES = 1024;
 
-export function sendJson(res, status, payload) {
+export function sendJson(res, status, payload, extraHeaders = null) {
   const headers = {
     'content-type': 'application/json; charset=utf-8',
-    'cache-control': 'no-store'
+    'cache-control': 'no-store',
+    ...(extraHeaders || {})
   };
-  const body = JSON.stringify(payload);
+  const body = typeof payload === 'string' ? payload : JSON.stringify(payload);
   if (body.length < JSON_GZIP_MIN_BYTES || !res.req || !acceptsGzip(res.req)) {
     res.writeHead(status, headers);
     res.end(body);
@@ -75,6 +77,21 @@ export function sendJson(res, status, payload) {
     });
     res.end(compressed);
   });
+}
+
+// For payloads a client polls: the browser revalidates with If-None-Match
+// and gets a bodiless 304 when nothing changed (no-cache, not no-store, so
+// the private browser cache may keep a copy).
+export function sendJsonRevalidated(req, res, payload) {
+  const body = JSON.stringify(payload);
+  const etag = `W/"${createHash('sha1').update(body).digest('base64url')}"`;
+  const headers = { 'cache-control': 'private, no-cache', etag };
+  if (req.headers['if-none-match'] === etag) {
+    res.writeHead(304, headers);
+    res.end();
+    return;
+  }
+  sendJson(res, 200, body, headers);
 }
 
 export function sendHtml(res, status, html) {
