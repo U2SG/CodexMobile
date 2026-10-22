@@ -73,5 +73,13 @@ export function createEventLog({
     return { status: 'ok', events: entries.filter((entry) => entry.seq > cursor.seq) };
   }
 
-  return { append, since, get epoch() { return epoch; }, get lastId() { return seq ? `${epoch}:${seq}` : null; } };
+  return {
+    append,
+    since,
+    get epoch() { return epoch; },
+    get lastId() { return seq ? `${epoch}:${seq}` : null; },
+    // Position a client is at once it has seen everything so far; valid even
+    // before the first frame (`epoch:0`), so a quiet connect still resumes.
+    get cursor() { return `${epoch}:${seq}`; }
+  };
 }

@@ -117,3 +117,28 @@ test('a stale cursor gets resume:gap', async () => {
     assert.equal(JSON.parse(frames[0].data).status, 'gap');
   });
 });
+
+test('a quiet connect still gets a cursor that resumes, and slow hello frames do not hold up resume', async () => {
+  const log = createEventLog({ epoch: 'e1' });
+  let releaseHello;
+  const hub = createEventStreamHub({ log, helloFrames: () => new Promise((resolve) => { releaseHello = () => resolve([{ type: 'connected' }]); }) });
+  const server = http.createServer((req, res) => hub.handle(req, res));
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const url = `http://127.0.0.1:${server.address().port}/api/events`;
+  try {
+    const first = await readFrames(url, {}, 1);
+    const resume = JSON.parse(first[0].data);
+    assert.equal(resume.status, 'fresh');
+    assert.equal(resume.cursor, 'e1:0');
+
+    // Missed while away, before any logged frame reached this client.
+    hub.publish({ type: 'thread-started', n: 1 });
+    const again = await readFrames(url, { 'last-event-id': resume.cursor }, 2);
+    assert.equal(JSON.parse(again[0].data).status, 'ok');
+    assert.equal(JSON.parse(again[1].data).n, 1);
+    releaseHello?.();
+  } finally {
+    server.closeAllConnections?.();
+    server.close();
+  }
+});

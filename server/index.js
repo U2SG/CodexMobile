@@ -646,7 +646,10 @@ function broadcast(payload) {
     flushCoalescedFrames(socket, { force: !coalesceKey });
     socket.send(serialized);
   }
-  eventStream.publish(payload);
+  // Approvals are current state, not history: a replayed one may already be
+  // resolved. Reconnects get the live pending list in the hello frames.
+  if (payload?.type === 'approval-request') eventStream.send(payload);
+  else eventStream.publish(payload);
 }
 
 // Build identity of the currently deployed PWA, derived from the Vite content

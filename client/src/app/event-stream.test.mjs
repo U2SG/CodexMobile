@@ -163,3 +163,18 @@ test('reconnects pause while hidden and resume on foreground', async () => {
   assert.equal(world.streams.length, 2);
   stream.stop();
 });
+
+test('a fresh or gap resume adopts the server cursor for the next reconnect', async () => {
+  const world = harness();
+  const { stream } = open(world);
+  stream.start();
+  await flush();
+  world.streams[0].push('event: resume\ndata: {"status":"fresh","cursor":"ep:7"}\n\n');
+  await flush();
+  assert.equal(stream.lastEventId, 'ep:7');
+  world.streams[0].end();
+  await flush();
+  await world.advance(2_000);
+  assert.equal(world.streams[1].init.headers['last-event-id'], 'ep:7');
+  stream.stop();
+});

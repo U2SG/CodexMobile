@@ -27,22 +27,28 @@ function fakeFetch(url, init = {}) {
     streams.push({ push: (text) => controller.enqueue(new TextEncoder().encode(text)) });
     return Promise.resolve(new Response(body, { status: 200 }));
   }
-  const json = url === '/api/projects' ? { projects: [{ id: 'p1' }] } : { messages: [], sessions: [] };
-  return Promise.resolve(new Response(JSON.stringify(json), { status: 200 }));
+  const json = url === '/api/projects' ? { projects: [{ id: 'p1' }] } : { messages: [{ id: 'snapshot' }], sessions: [] };
+  const reply = () => new Response(JSON.stringify(json), { status: 200 });
+  if (String(url).startsWith('/api/sessions/') && messagesGate) {
+    return messagesGate.then(reply);
+  }
+  return Promise.resolve(reply());
 }
 
-function HookHost({ onSetDesktopBridge = () => {}, onSetProjects = () => {}, pushApprovalRequest = () => {} }) {
+let messagesGate = null;
+
+function HookHost({ onSetDesktopBridge = () => {}, onSetProjects = () => {}, onSetMessages = () => {}, pushApprovalRequest = () => {}, selectedSession = null }) {
   useAppEventStream({
     authenticated: true,
     defaultStatus: { connected: false },
     selectedProjectRef: { current: null },
-    selectedSessionRef: { current: null },
+    selectedSessionRef: { current: selectedSession },
     sessionsByProjectRef: { current: {} },
     setConnectionState: () => {},
     setStatus: () => {},
     setSelectedSession: () => {},
     setSessionsByProject: () => {},
-    setMessages: () => {},
+    setMessages: (value) => onSetMessages(value),
     setProjects: onSetProjects,
     setPinFolders: () => {},
     setPinnedSessions: () => {},
@@ -68,6 +74,7 @@ const settle = () => act(async () => { await new Promise((resolve) => setTimeout
 
 beforeEach(() => {
   streams = [];
+  messagesGate = null;
   requests = [];
   localStorage.setItem(TOKEN_KEY, 'smoke-token');
   vi.stubGlobal('fetch', vi.fn(fakeFetch));
@@ -113,4 +120,29 @@ test('a gap refetches projects instead of trusting stale state', async () => {
   await settle();
   expect(requests).toContain('/api/projects');
   expect(projects.at(-1)).toEqual([{ id: 'p1' }]);
+});
+
+test('frames that arrive during a gap refetch are applied after the snapshot, not undone by it', async () => {
+  let openGate;
+  messagesGate = new Promise((resolve) => { openGate = resolve; });
+  const order = [];
+  await act(async () => {
+    root.render(
+      <HookHost
+        selectedSession={{ id: 's1' }}
+        onSetMessages={(value) => order.push(typeof value === 'function' ? 'update' : `snapshot:${value[0]?.id}`)}
+        onSetDesktopBridge={() => order.push('bridge')}
+      />
+    );
+  });
+  await settle();
+  streams[0].push(
+    'event: resume\ndata: {"status":"gap","cursor":"e:9"}\n\n'
+    + `id: e:10\ndata: ${JSON.stringify({ type: 'desktop-bridge-changed', status: { connected: true } })}\n\n`
+  );
+  await settle();
+  expect(order).toEqual([]);
+  openGate();
+  await settle();
+  expect(order).toEqual(['snapshot:snapshot', 'bridge']);
 });

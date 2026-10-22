@@ -73,8 +73,26 @@ export function useAppEventStream({
     // The log no longer covers our cursor (server restarted, or we were away
     // long enough for the buffer to roll over): whatever happened meanwhile
     // is only in server state. Replace, don't merge — merging a stale page
-    // into a live stream is what rolled back streaming replies before.
+    // into a live stream is what rolled back streaming replies before. Live
+    // frames that arrive while the page is loading are held and applied after
+    // it, so the snapshot cannot undo them; only the newest resync installs.
+    let resyncGeneration = 0;
+    let heldFrames = null;
+    function handlePayload(payload) {
+      if (heldFrames) {
+        heldFrames.push(payload);
+        return;
+      }
+      dispatchPayload(payload);
+    }
+    function releaseHeldFrames() {
+      const frames = heldFrames || [];
+      heldFrames = null;
+      for (const payload of frames) dispatchPayload(payload);
+    }
+
     function resyncAfterGap() {
+      const generation = ++resyncGeneration;
       apiFetch('/api/projects')
         .then((data) => {
           if (!stopped && Array.isArray(data?.projects)) setProjects(data.projects);
@@ -90,17 +108,22 @@ export function useAppEventStream({
       }
       const session = selectedSessionRef.current;
       if (session?.id && !isDraftSession(session)) {
+        heldFrames ||= [];
         apiFetch(sessionMessagesPath(session.id))
           .then((data) => {
-            if (!stopped && selectedSessionRef.current?.id === session.id && Array.isArray(data?.messages)) {
+            if (stopped || generation !== resyncGeneration) return;
+            if (selectedSessionRef.current?.id === session.id && Array.isArray(data?.messages)) {
               setMessages(data.messages);
             }
           })
-          .catch(() => null);
+          .catch(() => null)
+          .finally(() => {
+            if (!stopped && generation === resyncGeneration) releaseHeldFrames();
+          });
       }
     }
 
-    function handlePayload(payload) {
+    function dispatchPayload(payload) {
       if (payload.turnId) {
         markClientTurnLatency(payload.turnId, 'firstWsEvent');
       }

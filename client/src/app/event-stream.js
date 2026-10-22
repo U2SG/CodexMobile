@@ -149,6 +149,10 @@ export function createEventStream({
             connected = true;
             timers.clearTimeout(connectTimer);
             backoff.reset();
+            // fresh/gap: we are caught up as of the server's cursor (a gap is
+            // repaired by the caller's refetch), so resume from there next
+            // time even if no logged frame arrives before a disconnect.
+            if (resume.cursor && resume.status !== 'ok') lastEventId = resume.cursor;
             setState('connected');
             onResume(resume.status || 'fresh');
             return;
