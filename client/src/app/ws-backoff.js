@@ -1,4 +1,4 @@
-// Exponential backoff with full jitter, used by useAppWebSocket reconnect.
+// Exponential backoff with full jitter, used by the event-stream reconnect.
 //
 // The base sequence (no jitter) is initial * multiplier^attempt, capped at max.
 // Each computed delay is then perturbed by ±jitter (fractional, e.g. 0.25 → ±25%).

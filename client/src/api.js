@@ -112,12 +112,6 @@ export async function apiBlobFetch(path, options = {}) {
   return response.blob();
 }
 
-export function websocketUrl() {
-  const token = encodeURIComponent(getToken());
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${protocol}//${window.location.host}/ws?token=${token}`;
-}
-
 export function realtimeVoiceWebsocketUrl() {
   const token = encodeURIComponent(getToken());
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';

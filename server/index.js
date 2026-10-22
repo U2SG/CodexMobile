@@ -84,6 +84,8 @@ import { CODEX_SESSIONS_DIR } from './codex-config.js';
 import { CLAUDE_PROJECTS_DIR } from './claude-config.js';
 import { publicVoiceTranscriptionStatus, transcribeAudio } from './voice-transcriber.js';
 import { listPendingApprovals } from './approval-pool.js';
+import { createEventLog } from './event-log.js';
+import { createEventStreamHub } from './event-stream.js';
 import { publicVoiceSpeechStatus, synthesizeSpeech } from './voice-speaker.js';
 import { publicVoiceRealtimeStatus, startVoiceRealtimeProxy } from './realtime-voice.js';
 import { readBody, remoteAddress, sendJson } from './http-utils.js';
@@ -165,6 +167,15 @@ const FEISHU_AUTH_STATE_MAX_AGE_MS = 15 * 60 * 1000;
 
 const pinStore = createPinStore();
 const sockets = new Set();
+// SSE live channel (/api/events). The WebSocket path stays for PWAs still
+// running an older bundle; both receive every broadcast.
+const eventStream = createEventStreamHub({
+  log: createEventLog(),
+  helloFrames: async () => [
+    { type: 'connected', status: await publicStatus(true) },
+    ...listPendingApprovals().map((approval) => ({ type: 'approval-request', ...approval }))
+  ]
+});
 const chatQueue = createChatQueue();
 let chatService = null;
 let chatRoutes = null;
@@ -635,6 +646,7 @@ function broadcast(payload) {
     flushCoalescedFrames(socket, { force: !coalesceKey });
     socket.send(serialized);
   }
+  eventStream.publish(payload);
 }
 
 // Build identity of the currently deployed PWA, derived from the Vite content
@@ -769,6 +781,11 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (method === 'GET' && pathname === '/api/events') {
+    await eventStream.handle(req, res);
+    return;
+  }
+
   if (await chatRoutes(req, res, { method, pathname, parts, url })) {
     return;
   }
@@ -842,7 +859,9 @@ async function main() {
   const heartbeatTimer = setInterval(async () => {
     // Piggyback the deployed build id so a phone that stays connected learns
     // about a rebuild within one heartbeat instead of on its next reconnect.
-    const frame = JSON.stringify({ type: 'heartbeat', buildId: await getClientBuildId() });
+    const heartbeat = { type: 'heartbeat', buildId: await getClientBuildId() };
+    eventStream.send(heartbeat);
+    const frame = JSON.stringify(heartbeat);
     for (const ws of sockets) {
       if (ws.isAlive === false) {
         sockets.delete(ws);
