@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { apiFetch, getToken, setToken, websocketUrl } from './api.js';
+import { AUTH_LOST_EVENT, apiFetch, clearToken, getToken, setToken, websocketUrl } from './api.js';
 import { agentMeta } from './agent-meta.js';
 import { Composer } from './composer/Composer.jsx';
 import { ConnectionRecoveryCard } from './panels/ConnectionRecoveryCard.jsx';
@@ -83,6 +83,14 @@ function hasRunningKey(runningById, keys) {
 export default function App() {
   const [status, setStatus] = useState(DEFAULT_STATUS);
   const [authenticated, setAuthenticated] = useState(Boolean(getToken()));
+  useEffect(() => {
+    const onAuthLost = () => {
+      clearToken();
+      setAuthenticated(false);
+    };
+    window.addEventListener(AUTH_LOST_EVENT, onAuthLost);
+    return () => window.removeEventListener(AUTH_LOST_EVENT, onAuthLost);
+  }, []);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [projects, setProjects] = useState([]);
   const [pinFolders, setPinFolders] = useState([]);

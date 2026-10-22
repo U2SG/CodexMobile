@@ -12,6 +12,17 @@ export function clearToken() {
   localStorage.removeItem(TOKEN_KEY);
 }
 
+// The device token was revoked or the server's auth state was reset. Without
+// this the app kept retrying forever behind a "disconnected" badge instead of
+// returning to the pairing screen.
+export const AUTH_LOST_EVENT = 'codexmobile:auth-lost';
+
+export function notifyAuthLost() {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(AUTH_LOST_EVENT));
+  }
+}
+
 // A GET that stalls after a network switch never settles on iOS, which
 // leaves pollers waiting on it forever. The deadline only has to beat a dead
 // socket, so it sits above the slowest legitimate reads (search, git history,
@@ -61,6 +72,7 @@ export async function apiFetch(path, options = {}) {
     throw new Error('Invalid JSON response');
   }
   if (!response.ok) {
+    if (response.status === 401 && token) notifyAuthLost();
     throw new Error(data.error || `Request failed: ${response.status}`);
   }
   return data;

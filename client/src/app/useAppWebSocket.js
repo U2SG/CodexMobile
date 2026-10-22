@@ -12,7 +12,7 @@
 
 import { useEffect } from 'react';
 
-import { apiFetch, getToken, websocketUrl } from '../api.js';
+import { apiFetch, getToken, notifyAuthLost, websocketUrl } from '../api.js';
 import { sameUserMessageContent } from '../chat/message-identity.js';
 import { createAssistantStreamBuffer } from '../chat/assistant-stream-buffer.js';
 import { finishClientTurnLatency, markClientTurnLatency } from '../turn-latency.js';
@@ -72,6 +72,20 @@ export function useAppWebSocket({
     // CONNECTING with no close event; nothing else reaps that state.
     const CONNECT_TIMEOUT_MS = 10_000;
     let connectTimer = null;
+    // Browsers hide the upgrade's HTTP status, so a 401 looks like any other
+    // failed handshake. After a few in a row, ask /api/status whether the
+    // token is still accepted.
+    const AUTH_CHECK_AFTER_FAILURES = 3;
+    let failedHandshakes = 0;
+    const checkAuthAfterFailedHandshakes = () => {
+      failedHandshakes += 1;
+      if (failedHandshakes % AUTH_CHECK_AFTER_FAILURES !== 0) return;
+      apiFetch('/api/status')
+        .then((status) => {
+          if (!stopped && status?.auth && status.auth.authenticated === false) notifyAuthLost();
+        })
+        .catch(() => null);
+    };
     let lastFrameAt = Date.now();
     const socketLooksStale = () => Date.now() - lastFrameAt > HEARTBEAT_STALE_MS;
 
@@ -193,7 +207,10 @@ export function useAppWebSocket({
         scheduleReconnect();
       }, CONNECT_TIMEOUT_MS);
 
+      let opened = false;
       ws.onopen = () => {
+        opened = true;
+        failedHandshakes = 0;
         window.clearTimeout(connectTimer);
         lastFrameAt = Date.now();
         setConnectionState('connecting');
@@ -202,6 +219,7 @@ export function useAppWebSocket({
         if (livenessProbe?.socket === ws) {
           clearLivenessProbe();
         }
+        if (!opened) checkAuthAfterFailedHandshakes();
         setConnectionState('disconnected');
         scheduleReconnect();
       };
