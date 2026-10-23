@@ -61,9 +61,37 @@ async function mergeDevicesFromDisk() {
   }
 }
 
+// Every pairing adds a device and nothing used to remove one, so re-pairs
+// after a cleared browser and verification scripts piled up indefinitely.
+// Devices unused for CODEXMOBILE_DEVICE_TTL_DAYS (default 60, 0 disables) are
+// dropped. Applied after the disk merge, so both services prune the same set
+// and a pruned device is not carried back in from the other's copy.
+const DEFAULT_DEVICE_TTL_DAYS = 60;
+
+function deviceTtlMs() {
+  const raw = process.env.CODEXMOBILE_DEVICE_TTL_DAYS;
+  const days = raw === undefined || raw === '' ? DEFAULT_DEVICE_TTL_DAYS : Number(raw);
+  return Number.isFinite(days) && days > 0 ? days * 24 * 60 * 60 * 1000 : 0;
+}
+
+function deviceExpired(device, now = Date.now()) {
+  const ttl = deviceTtlMs();
+  if (!ttl) return false;
+  const lastUsed = Date.parse(device.lastSeenAt || device.createdAt || '') || 0;
+  return now - lastUsed > ttl;
+}
+
+function pruneExpiredDevices() {
+  const before = authState.devices.length;
+  authState.devices = authState.devices.filter((device) => !deviceExpired(device));
+  const pruned = before - authState.devices.length;
+  if (pruned) console.log(`[auth] removed ${pruned} device(s) unused for over ${Math.round(deviceTtlMs() / 86_400_000)} days`);
+}
+
 function writeState() {
   const run = writeChain.then(async () => {
     await mergeDevicesFromDisk();
+    pruneExpiredDevices();
     await fs.mkdir(DATA_DIR, { recursive: true });
     const tmp = `${STATE_FILE}.tmp-${process.pid}-${++writeSeq}`;
     try {
@@ -164,7 +192,7 @@ export async function verifyToken(token, metadata = {}) {
     // Paired on the other service after this process started.
     device = authState.devices.find((entry) => entry.tokenHash === tokenHash);
   }
-  if (!device) {
+  if (!device || deviceExpired(device)) {
     return false;
   }
 
