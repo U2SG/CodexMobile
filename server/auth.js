@@ -39,8 +39,31 @@ async function readState() {
 // lastSeenAt write racing pairDevice) would drop the newly paired device.
 let writeChain = Promise.resolve();
 let writeSeq = 0;
+
+// Both services (Codex and Claude) normally share this file, and each keeps
+// its own copy in memory. Writing that copy whole dropped any device paired on
+// the other service since startup — the next restart then rejected its token.
+// Fold in what is on disk first: devices only on disk are adopted (so this
+// process accepts them too), shared ones keep the newer lastSeenAt.
+async function mergeDevicesFromDisk() {
+  const disk = await readState();
+  const known = new Map(authState.devices.map((device) => [device.id, device]));
+  for (const device of disk.devices) {
+    if (!device?.id) continue;
+    const mine = known.get(device.id);
+    if (!mine) {
+      authState.devices.push(device);
+      known.set(device.id, device);
+    } else if ((Date.parse(device.lastSeenAt || '') || 0) > (Date.parse(mine.lastSeenAt || '') || 0)) {
+      mine.lastSeenAt = device.lastSeenAt;
+      mine.lastRemoteAddress = device.lastRemoteAddress ?? mine.lastRemoteAddress;
+    }
+  }
+}
+
 function writeState() {
   const run = writeChain.then(async () => {
+    await mergeDevicesFromDisk();
     await fs.mkdir(DATA_DIR, { recursive: true });
     const tmp = `${STATE_FILE}.tmp-${process.pid}-${++writeSeq}`;
     try {
@@ -114,13 +137,33 @@ export function extractBearerToken(req) {
   return typeof fallback === 'string' ? fallback.trim() : '';
 }
 
+// Unknown tokens re-check the shared file, at most every couple of seconds so
+// a client hammering with a bad token cannot turn into a disk read per request.
+const DISK_REFRESH_MIN_MS = 2_000;
+let lastDiskRefreshAt = 0;
+async function refreshFromDisk() {
+  const now = Date.now();
+  if (now - lastDiskRefreshAt < DISK_REFRESH_MIN_MS) return false;
+  lastDiskRefreshAt = now;
+  try {
+    await mergeDevicesFromDisk();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function verifyToken(token, metadata = {}) {
   if (!token || !authState) {
     return false;
   }
 
   const tokenHash = hashToken(token);
-  const device = authState.devices.find((entry) => entry.tokenHash === tokenHash);
+  let device = authState.devices.find((entry) => entry.tokenHash === tokenHash);
+  if (!device && await refreshFromDisk()) {
+    // Paired on the other service after this process started.
+    device = authState.devices.find((entry) => entry.tokenHash === tokenHash);
+  }
   if (!device) {
     return false;
   }
