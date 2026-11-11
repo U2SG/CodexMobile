@@ -506,3 +506,52 @@ test('rollout parsing yields command steps in one pass and skips the extra file 
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
+
+test('appended rollout rows parse incrementally to the same result as a full parse', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codexmobile-rollout-incremental-'));
+  try {
+    const rolloutPath = path.join(dir, 'rollout.jsonl');
+    const row = (value) => `${JSON.stringify(value)}\n`;
+    const first = [
+      row({ timestamp: '2026-05-08T01:00:00.000Z', type: 'turn_context', payload: { turn_id: 'turn-1' } }),
+      row({ timestamp: '2026-05-08T01:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'run ls' }] } }),
+      row({ timestamp: '2026-05-08T01:00:02.000Z', type: 'response_item', payload: { type: 'function_call', name: 'shell', call_id: 'call-1', arguments: JSON.stringify({ command: ['ls'] }) } })
+    ].join('');
+    const appended = [
+      row({ timestamp: '2026-05-08T01:00:03.000Z', type: 'response_item', payload: { type: 'function_call_output', call_id: 'call-1', output: 'a.txt\nb.txt' } }),
+      row({ timestamp: '2026-05-08T01:00:04.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'two files' }] } }),
+      row({ timestamp: '2026-05-08T01:01:00.000Z', type: 'turn_context', payload: { turn_id: 'turn-2' } }),
+      row({ timestamp: '2026-05-08T01:01:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'thanks' }] } })
+    ].join('');
+    await fs.writeFile(rolloutPath, first);
+
+    const reader = createSessionMessageReader({
+      readDeletedMessageIds: async () => new Set(),
+      readDesktopThread: async () => {
+        const error = new Error('thread not loaded');
+        error.statusCode = 404;
+        throw error;
+      },
+      resolveSessionThread: async (sessionId) => ({ id: sessionId, filePath: rolloutPath })
+    });
+    const options = { limit: 0, latest: false, includeActivity: true };
+    await reader.readSessionMessages('session-inc', options);
+
+    await fs.appendFile(rolloutPath, appended);
+    // Force an mtime change the result cache can see on coarse clocks.
+    const later = new Date(Date.now() + 5000);
+    await fs.utimes(rolloutPath, later, later);
+    const incremental = await reader.readSessionMessages('session-inc', options);
+
+    const full = messagesFromRolloutJsonl(first + appended, 'session-inc');
+
+    assert.deepEqual(
+      incremental.messages.filter((m) => m.role !== 'activity').map((m) => [m.role, m.content, m.turnId]),
+      full.messages.map((m) => [m.role, m.content, m.turnId])
+    );
+    const command = JSON.stringify(incremental.messages);
+    assert.match(command, /a\.txt/, 'output appended after the call lands on the same activity');
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
