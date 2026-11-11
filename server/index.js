@@ -70,6 +70,7 @@ import { createQuotaRoutes } from './quota-routes.js';
 import { createVoiceRoutes } from './voice-routes.js';
 import { readVoiceUpload as readVoiceUploadFromService } from './upload-service.js';
 import { createSessionRoutes } from './session-routes.js';
+import { createAssistantFrameThrottle } from './assistant-frame-throttle.js';
 import { createPushService } from './push-service.js';
 import { createPushRoutes } from './push-routes.js';
 import { createPeerRoutes } from './peer-routes.js';
@@ -624,7 +625,13 @@ function flushCoalescedFrames(socket, { force = false } = {}) {
   socket.coalescedFrames.clear();
 }
 
+const assistantFrameThrottle = createAssistantFrameThrottle({ deliver: deliverFrame });
+
 function broadcast(payload) {
+  assistantFrameThrottle.send(payload);
+}
+
+function deliverFrame(payload) {
   const serialized = JSON.stringify(payload);
   const coalesceKey = payload?.type === 'assistant-update'
     ? `${payload.turnId || ''}:${payload.messageId || ''}`

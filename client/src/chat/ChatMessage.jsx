@@ -1,3 +1,4 @@
+import { memo } from 'react';
 // Single chat turn bubble. Dispatches to ActivityMessage for role='activity',
 // PlanMessage for role='plan'|'plan_request', otherwise renders user/assistant
 // content via MessageContent with a copy/delete action row.
@@ -15,7 +16,7 @@ import { MessageActions } from './MessageActions.jsx';
 import { MessageContent } from './MessageContent.jsx';
 import { PlanMessage } from './PlanMessage.jsx';
 
-export function ChatMessage({
+export const ChatMessage = memo(function ChatMessage({
   message,
   now,
   onPreviewImage,
@@ -61,4 +62,4 @@ export function ChatMessage({
       </div>
     </div>
   );
-}
+});

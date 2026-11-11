@@ -21,7 +21,7 @@
 // behavior until the running flag flips again.
 
 import { ChevronDown } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, memo } from 'react';
 import { ActivityMessage } from './ActivityMessage.jsx';
 import { MessageActions } from './MessageActions.jsx';
 import { MessageContent } from './MessageContent.jsx';
@@ -68,7 +68,7 @@ function InlineSegment({ message, agent, now, onPreviewImage, onImplementPlan, o
   );
 }
 
-export function TurnGroup({ messages, agent, now, onPreviewImage, onDeleteMessage, onImplementPlan, onAdjustPlan }) {
+export const TurnGroup = memo(function TurnGroup({ messages, agent, now, onPreviewImage, onDeleteMessage, onImplementPlan, onAdjustPlan }) {
   const isRunning = deriveIsRunning(messages);
   const conclusionIdx = findConclusionIndex(messages);
 
@@ -168,4 +168,4 @@ export function TurnGroup({ messages, agent, now, onPreviewImage, onDeleteMessag
       </div>
     </div>
   );
-}
+});
