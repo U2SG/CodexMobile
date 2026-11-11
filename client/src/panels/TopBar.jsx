@@ -28,7 +28,9 @@ export function TopBar({
   onShowConnectionStatus,
   status,
   desktopBridge,
-  peers = []
+  peers = [],
+  runs = [],
+  onShowRuns
 }) {
   const connection = CONNECTION_STATUS[connectionState] || CONNECTION_STATUS.disconnected;
   const agent = agentMeta(status);
@@ -88,11 +90,22 @@ export function TopBar({
       </button>
       <div className="top-title" title={headerTitle} aria-label={headerTitle}>
         <strong>{displaySessionTitle}</strong>
-        <span className={`top-meta ${showProjectContext ? 'has-project-context' : 'is-status-only'}`}>
+        <span className={`top-meta ${showProjectContext ? 'has-project-context' : 'is-status-only'} ${runs.length ? 'has-runs' : ''}`}>
           {showProjectContext ? (
             <span className="top-project-context" title={selectedProject?.path || projectName}>
               {displayProjectName}
             </span>
+          ) : null}
+          {runs.length ? (
+            <button
+              type="button"
+              className={`runs-pill ${runs.some((run) => run.status === 'approval') ? 'has-approval' : ''}`}
+              onClick={onShowRuns}
+              aria-label={`${runs.length} 个会话进行中，查看列表`}
+            >
+              <span className="runs-pill__dot" aria-hidden="true" />
+              {runs.length} 进行中
+            </button>
           ) : null}
           {hasPeers ? (
             <span className="peer-switcher">

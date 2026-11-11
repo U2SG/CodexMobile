@@ -59,6 +59,8 @@ import { useTurnSubmission } from './app/useTurnSubmission.js';
 import { useViewportSizing } from './app/useViewportSizing.js';
 import NotificationSettings from './notifications.jsx';
 import { ActivityPanel } from './panels/ActivityPanel.jsx';
+import { RunsOverviewSheet } from './panels/RunsOverviewSheet.jsx';
+import { useRunsOverview } from './app/useRunsOverview.js';
 import { LazyBoundary } from './LazyBoundary.jsx';
 
 // Opened on demand; keeps the git views and diff renderer out of the startup bundle.
@@ -351,6 +353,28 @@ export default function App() {
     setInput
   });
 
+  const [runsOpen, setRunsOpen] = useState(false);
+  const runsOverview = useRunsOverview({ authenticated, open: runsOpen });
+
+  // A run row only carries ids; the session may live in a project whose
+  // session list was never loaded on this device, so fetch it on demand.
+  async function handleOpenRun(run) {
+    setRunsOpen(false);
+    const project = projects.find((item) => item.id === run.projectId) || null;
+    let session = (sessionsByProject[run.projectId] || []).find((item) => item.id === run.sessionId);
+    if (!session && project) {
+      try {
+        const data = await apiFetch(`/api/projects/${encodeURIComponent(project.id)}/sessions`);
+        const sessions = data.sessions || [];
+        setSessionsByProject((current) => ({ ...current, [project.id]: sessions }));
+        session = sessions.find((item) => item.id === run.sessionId);
+      } catch {
+        session = null;
+      }
+    }
+    if (session) handleSelectSession(session, project);
+  }
+
   const {
     loadStatus,
     loadProjects,
@@ -631,6 +655,8 @@ export default function App() {
         status={status}
         desktopBridge={desktopBridge}
         peers={peers}
+        runs={runsOverview.runs}
+        onShowRuns={() => setRunsOpen(true)}
         onMenu={() => setDrawerOpen(true)}
         onShowConnectionStatus={handleShowConnectionStatus}
       />
@@ -728,6 +754,13 @@ export default function App() {
             </div>
           </div>
         </div>
+      ) : null}
+      {runsOpen ? (
+        <RunsOverviewSheet
+          runs={runsOverview.runs}
+          onSelect={handleOpenRun}
+          onClose={() => setRunsOpen(false)}
+        />
       ) : null}
       {activityOpen ? (
         <ActivityPanel onClose={() => setActivityOpen(false)} />
