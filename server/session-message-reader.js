@@ -26,6 +26,7 @@ import {
   filterDeletedMessages as defaultFilterDeletedMessages,
   readDeletedMessageIds as defaultReadDeletedMessageIds
 } from './session-local-state.js';
+import { createJsonlIncrementalCache } from './jsonl-incremental-cache.js';
 
 const ROLLOUT_CONTEXT_READ_BYTES = Math.max(
   64 * 1024,
@@ -75,16 +76,145 @@ function ensureRolloutTurn(turns, sessionId, timestamp) {
   return turn;
 }
 
-export function messagesFromRolloutJsonl(content, sessionId) {
-  const messages = [];
-  const turns = [];
-  const activities = [];
-  const commandCallsById = new Map();
-  const implementedPlanContents = new Set();
-  const userCountsByTurn = new Map();
-  const lines = String(content || '').split(/\r?\n/);
+function createRolloutParseState(sessionId) {
+  return {
+    sessionId,
+    messages: [],
+    turns: [],
+    activities: [],
+    commandCallsById: new Map(),
+    implementedPlanContents: new Set(),
+    userCountsByTurn: new Map()
+  };
+}
 
-  for (const line of lines) {
+function applyRolloutEntry(state, entry) {
+  const { sessionId, messages, turns, activities, commandCallsById, implementedPlanContents, userCountsByTurn } = state;
+  const timestamp = entry.timestamp || new Date().toISOString();
+  if (entry.type === 'turn_context') {
+    turns.push({
+      id: entry.payload?.turn_id || `${sessionId}-turn-${turns.length + 1}`,
+      startedAt: epochSecondsFromIso(timestamp)
+    });
+    return;
+  }
+  if (entry.type !== 'response_item') {
+    return;
+  }
+  // Command steps come out of the same pass as the messages: walking a
+  // multi-MB rollout three times (messages, then raw activities, then collab
+  // activities) cost ~350ms of the ~480ms a 13MB session took to open, and
+  // the two extra passes returned nothing at all on 0.149 rollouts.
+  const payloadType = entry.payload?.type;
+  if (payloadType === 'custom_tool_call' || payloadType === 'function_call') {
+    const commandTurn = ensureRolloutTurn(turns, sessionId, timestamp);
+    const activity = rolloutCommandActivity(entry.payload, {
+      timestamp,
+      turnId: commandTurn.id,
+      idSuffix: entry.payload.call_id || `${activities.length + 1}`
+    });
+    if (activity) {
+      const segmentIndex = Math.max(0, (userCountsByTurn.get(commandTurn.id) || 0) - 1);
+      const item = { turnId: commandTurn.id, segmentIndex, activity };
+      activities.push(item);
+      if (entry.payload.call_id) {
+        commandCallsById.set(entry.payload.call_id, activity);
+      }
+    }
+    return;
+  }
+  if (payloadType === 'custom_tool_call_output' || payloadType === 'function_call_output') {
+    applyRolloutCommandOutput(commandCallsById.get(entry.payload.call_id), entry.payload);
+    return;
+  }
+  if (payloadType !== 'message') {
+    return;
+  }
+  const role = entry.payload.role;
+  if (role !== 'user' && role !== 'assistant') {
+    return;
+  }
+  const contentText = responseMessageText(entry.payload.content);
+  if (!contentText) {
+    return;
+  }
+  if (role === 'user' && isCodexSystemNoiseBlock(contentText)) {
+    return;
+  }
+  if (role === 'assistant' && isCommentaryPhase(entry.payload)) {
+    const commentaryTurn = ensureRolloutTurn(turns, sessionId, timestamp);
+    const activity = commentaryActivity(contentText, {
+      id: entry.payload.id ? `${entry.payload.id}-commentary` : `${commentaryTurn.id}-commentary-${activities.length + 1}`,
+      turnId: commentaryTurn.id,
+      timestamp
+    });
+    if (activity) {
+      activities.push({ turnId: commentaryTurn.id, activity });
+    }
+    return;
+  }
+  const implementedPlanContent = role === 'user' ? implementedPlanContentFromMessage(contentText) : '';
+  if (implementedPlanContent) {
+    implementedPlanContents.add(implementedPlanContent.replace(/\s+/g, ' ').trim());
+  }
+  const turn = ensureRolloutTurn(turns, sessionId, timestamp);
+  let userIndex = -1;
+  if (role === 'user') {
+    userIndex = userCountsByTurn.get(turn.id) || 0;
+    userCountsByTurn.set(turn.id, userIndex + 1);
+  }
+  if (role === 'assistant') {
+    const proposedPlan = extractProposedPlanContent(contentText);
+    if (proposedPlan) {
+      const baseId = entry.payload.id || `${turn.id}-assistant-${messages.length + 1}`;
+      const planMessage = planMessageFromContent({
+        id: `${baseId}-plan`,
+        content: proposedPlan,
+        timestamp,
+        turnId: turn.id,
+        sessionId
+      });
+      const requestMessage = planRequestMessageFromContent({
+        id: `${baseId}-plan-request`,
+        requestId: `implement-plan:${turn.id}`,
+        content: proposedPlan,
+        timestamp,
+        turnId: turn.id,
+        sessionId
+      });
+      if (planMessage) messages.push(planMessage);
+      if (requestMessage) messages.push(requestMessage);
+      return;
+    }
+  }
+  messages.push({
+    id: entry.payload.id || `${turn.id}-${role}-${messages.length + 1}`,
+    role,
+    content: role === 'user' ? sanitizeVisibleUserMessage(contentText) : contentText,
+    ...(role === 'user' ? guidedUserMetadata(userIndex > 0) : {}),
+    timestamp,
+    turnId: turn.id,
+    sessionId
+  });
+}
+
+// Snapshot of the parse so far. Arrays are copied because the state keeps
+// growing as the rollout is appended to.
+function rolloutParseResult(state) {
+  const { messages, implementedPlanContents } = state;
+  const filteredMessages = implementedPlanContents.size
+    ? messages.filter((message) => {
+      if (message.role !== 'plan_request') return true;
+      const planContent = String(message.planImplementation?.planContent || '').replace(/\s+/g, ' ').trim();
+      return !implementedPlanContents.has(planContent);
+    })
+    : [...messages];
+  return { messages: filteredMessages, turns: [...state.turns], activities: [...state.activities] };
+}
+
+export function messagesFromRolloutJsonl(content, sessionId) {
+  const state = createRolloutParseState(sessionId);
+  for (const line of String(content || '').split(/\r?\n/)) {
     if (!line.trim()) {
       continue;
     }
@@ -94,131 +224,23 @@ export function messagesFromRolloutJsonl(content, sessionId) {
     } catch {
       continue;
     }
-    const timestamp = entry.timestamp || new Date().toISOString();
-    if (entry.type === 'turn_context') {
-      turns.push({
-        id: entry.payload?.turn_id || `${sessionId}-turn-${turns.length + 1}`,
-        startedAt: epochSecondsFromIso(timestamp)
-      });
-      continue;
-    }
-    if (entry.type !== 'response_item') {
-      continue;
-    }
-    // Command steps come out of the same pass as the messages: walking a
-    // multi-MB rollout three times (messages, then raw activities, then collab
-    // activities) cost ~350ms of the ~480ms a 13MB session took to open, and
-    // the two extra passes returned nothing at all on 0.149 rollouts.
-    const payloadType = entry.payload?.type;
-    if (payloadType === 'custom_tool_call' || payloadType === 'function_call') {
-      const commandTurn = ensureRolloutTurn(turns, sessionId, timestamp);
-      const activity = rolloutCommandActivity(entry.payload, {
-        timestamp,
-        turnId: commandTurn.id,
-        idSuffix: entry.payload.call_id || `${activities.length + 1}`
-      });
-      if (activity) {
-        const segmentIndex = Math.max(0, (userCountsByTurn.get(commandTurn.id) || 0) - 1);
-        const item = { turnId: commandTurn.id, segmentIndex, activity };
-        activities.push(item);
-        if (entry.payload.call_id) {
-          commandCallsById.set(entry.payload.call_id, activity);
-        }
-      }
-      continue;
-    }
-    if (payloadType === 'custom_tool_call_output' || payloadType === 'function_call_output') {
-      applyRolloutCommandOutput(commandCallsById.get(entry.payload.call_id), entry.payload);
-      continue;
-    }
-    if (payloadType !== 'message') {
-      continue;
-    }
-    const role = entry.payload.role;
-    if (role !== 'user' && role !== 'assistant') {
-      continue;
-    }
-    const contentText = responseMessageText(entry.payload.content);
-    if (!contentText) {
-      continue;
-    }
-    if (role === 'user' && isCodexSystemNoiseBlock(contentText)) {
-      continue;
-    }
-    if (role === 'assistant' && isCommentaryPhase(entry.payload)) {
-      const commentaryTurn = ensureRolloutTurn(turns, sessionId, timestamp);
-      const activity = commentaryActivity(contentText, {
-        id: entry.payload.id ? `${entry.payload.id}-commentary` : `${commentaryTurn.id}-commentary-${activities.length + 1}`,
-        turnId: commentaryTurn.id,
-        timestamp
-      });
-      if (activity) {
-        activities.push({ turnId: commentaryTurn.id, activity });
-      }
-      continue;
-    }
-    const implementedPlanContent = role === 'user' ? implementedPlanContentFromMessage(contentText) : '';
-    if (implementedPlanContent) {
-      implementedPlanContents.add(implementedPlanContent.replace(/\s+/g, ' ').trim());
-    }
-    const turn = ensureRolloutTurn(turns, sessionId, timestamp);
-    let userIndex = -1;
-    if (role === 'user') {
-      userIndex = userCountsByTurn.get(turn.id) || 0;
-      userCountsByTurn.set(turn.id, userIndex + 1);
-    }
-    if (role === 'assistant') {
-      const proposedPlan = extractProposedPlanContent(contentText);
-      if (proposedPlan) {
-        const baseId = entry.payload.id || `${turn.id}-assistant-${messages.length + 1}`;
-        const planMessage = planMessageFromContent({
-          id: `${baseId}-plan`,
-          content: proposedPlan,
-          timestamp,
-          turnId: turn.id,
-          sessionId
-        });
-        const requestMessage = planRequestMessageFromContent({
-          id: `${baseId}-plan-request`,
-          requestId: `implement-plan:${turn.id}`,
-          content: proposedPlan,
-          timestamp,
-          turnId: turn.id,
-          sessionId
-        });
-        if (planMessage) messages.push(planMessage);
-        if (requestMessage) messages.push(requestMessage);
-        continue;
-      }
-    }
-    messages.push({
-      id: entry.payload.id || `${turn.id}-${role}-${messages.length + 1}`,
-      role,
-      content: role === 'user' ? sanitizeVisibleUserMessage(contentText) : contentText,
-      ...(role === 'user' ? guidedUserMetadata(userIndex > 0) : {}),
-      timestamp,
-      turnId: turn.id,
-      sessionId
-    });
+    applyRolloutEntry(state, entry);
   }
-
-  const filteredMessages = implementedPlanContents.size
-    ? messages.filter((message) => {
-      if (message.role !== 'plan_request') return true;
-      const planContent = String(message.planImplementation?.planContent || '').replace(/\s+/g, ' ').trim();
-      return !implementedPlanContents.has(planContent);
-    })
-    : messages;
-
-  return { messages: filteredMessages, turns, activities };
+  return rolloutParseResult(state);
 }
+
+const rolloutParseCache = createJsonlIncrementalCache({
+  createState: createRolloutParseState,
+  applyEntry: applyRolloutEntry
+});
 
 async function readRolloutThreadFromFile(filePath, sessionId) {
   if (!filePath) {
     return null;
   }
-  const content = await fs.readFile(filePath, 'utf8');
-  const parsed = messagesFromRolloutJsonl(content, sessionId);
+  // Rollouts are append-only and reach hundreds of MB; parse only what was
+  // appended since the last read of this file.
+  const parsed = rolloutParseResult(await rolloutParseCache.read(filePath, sessionId));
   return {
     id: sessionId,
     path: filePath,

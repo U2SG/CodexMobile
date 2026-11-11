@@ -61,11 +61,12 @@ export function createJsonlIncrementalCache({ createState, applyEntry, maxEntrie
     applyEntry(entry.state, parsed);
   }
 
-  async function read(filePath) {
+  // `context` is passed to createState when a file's parse starts over.
+  async function read(filePath, context) {
     const stat = await fs.stat(filePath);
     let entry = entries.get(filePath);
     if (!entry || entry.ino !== stat.ino || stat.size < entry.offset) {
-      entry = { ino: stat.ino, offset: 0, state: createState(), queue: Promise.resolve() };
+      entry = { ino: stat.ino, offset: 0, state: createState(context), queue: Promise.resolve() };
     }
     touch(filePath, entry);
     // Serialize reads per file so two concurrent polls never apply the same
