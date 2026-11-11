@@ -185,22 +185,22 @@ test('sendNotification logs but does not throw on other errors (e.g. 500)', asyn
   assert.equal((await service.publicStatus()).subscriberCount, 1);
 });
 
-test('notificationFromServerPayload maps chat-completed', () => {
-  const note = notificationFromServerPayload({ type: 'chat-completed', detail: 'All done' });
+test('notificationFromServerPayload maps chat-complete', () => {
+  const note = notificationFromServerPayload({ type: 'chat-complete', detail: 'All done' });
   assert.equal(note.title, '任务已完成');
   assert.equal(note.level, 'success');
   assert.match(note.body, /All done/);
 });
 
-test('notificationFromServerPayload maps approval-needed', () => {
-  const note = notificationFromServerPayload({ type: 'approval-needed', label: 'Run command?' });
+test('notificationFromServerPayload maps approval-request', () => {
+  const note = notificationFromServerPayload({ type: 'approval-request', detail: 'Run command?' });
   assert.equal(note.level, 'warning');
   assert.equal(note.title, '需要处理');
   assert.match(note.body, /Run command/);
 });
 
-test('notificationFromServerPayload maps error', () => {
-  const note = notificationFromServerPayload({ type: 'error', error: 'boom' });
+test('notificationFromServerPayload maps chat-error', () => {
+  const note = notificationFromServerPayload({ type: 'chat-error', error: 'boom' });
   assert.equal(note.level, 'error');
   assert.equal(note.title, '任务失败');
   assert.match(note.body, /boom/);
@@ -215,10 +215,26 @@ test('notifyForPayload returns sent/removed counts and sends to subscribers', as
   const webPush = fakeWebPush();
   const service = createPushService({ stateDir: tmpDir, webPush, now: makeFixedNow() });
   await service.subscribe({ endpoint: 'https://push/a', keys: { p256dh: 'p', auth: 'a' } });
-  const result = await service.notifyForPayload({ type: 'chat-completed', detail: 'Done' });
+  const result = await service.notifyForPayload({ type: 'chat-complete', sessionId: 's1', detail: 'Done' });
   assert.deepEqual(result, { sent: 1, removed: 0 });
   assert.equal(webPush.sent.length, 1);
   assert.equal(webPush.sent[0].payload.title, '任务已完成');
+  assert.equal(webPush.sent[0].payload.tag, 'codexmobile-chat-complete-s1');
+});
+
+test('notifyForPayload keeps the push body small for large approval frames', async () => {
+  const webPush = fakeWebPush();
+  const service = createPushService({ stateDir: tmpDir, webPush, now: makeFixedNow() });
+  await service.subscribe({ endpoint: 'https://push/a', keys: { p256dh: 'p', auth: 'a' } });
+  await service.notifyForPayload({
+    type: 'approval-request',
+    sessionId: 's1',
+    detail: 'x'.repeat(5000),
+    params: { diff: 'y'.repeat(20000) }
+  });
+  const sent = webPush.sent[0].payload;
+  assert.deepEqual(sent.data, { type: 'approval-request', sessionId: 's1' });
+  assert.ok(JSON.stringify(sent).length < 1024);
 });
 
 test('notifyForPayload returns { sent:0, removed:0 } for unmapped events', async () => {
