@@ -40,6 +40,12 @@ function requestSignal(options) {
   return AbortSignal.timeout(GET_TIMEOUT_MS);
 }
 
+function httpError(message, status) {
+  const error = new Error(message);
+  error.status = status;
+  return error;
+}
+
 export async function apiFetch(path, options = {}) {
   const token = getToken();
   const headers = {
@@ -60,8 +66,10 @@ export async function apiFetch(path, options = {}) {
           : options.body
     });
   } catch (error) {
-    if (error?.name === 'TimeoutError') throw new Error('请求超时，请检查网络后重试');
-    throw error;
+    // No response at all: the request may or may not have reached the server.
+    const failure = error?.name === 'TimeoutError' ? new Error('请求超时，请检查网络后重试') : error;
+    if (failure && typeof failure === 'object' && error?.name !== 'AbortError') failure.network = true;
+    throw failure;
   }
 
   const text = await response.text();
@@ -70,12 +78,12 @@ export async function apiFetch(path, options = {}) {
     data = text ? JSON.parse(text) : {};
   } catch {
     // A proxy/gateway HTML error page: keep the status code visible.
-    if (!response.ok) throw new Error(`Request failed: ${response.status}`);
+    if (!response.ok) throw httpError(`Request failed: ${response.status}`, response.status);
     throw new Error('Invalid JSON response');
   }
   if (!response.ok) {
     if (response.status === 401 && token) notifyAuthLost(token);
-    throw new Error(data.error || `Request failed: ${response.status}`);
+    throw httpError(data.error || `Request failed: ${response.status}`, response.status);
   }
   return data;
 }
