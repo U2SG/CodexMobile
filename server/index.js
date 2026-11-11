@@ -71,7 +71,8 @@ import { createVoiceRoutes } from './voice-routes.js';
 import { readVoiceUpload as readVoiceUploadFromService } from './upload-service.js';
 import { createSessionRoutes } from './session-routes.js';
 import { createAssistantFrameThrottle } from './assistant-frame-throttle.js';
-import { createPushService } from './push-service.js';
+import { createPushService, notificationFromServerPayload } from './push-service.js';
+import { createNtfyNotifier } from './ntfy-notifier.js';
 import { createPushRoutes } from './push-routes.js';
 import { createPeerRoutes } from './peer-routes.js';
 import { createSearchRoutes } from './search-routes.js';
@@ -664,11 +665,22 @@ function deliverFrame(payload) {
 // hears about them; the service worker stays quiet while the app is in view.
 const PUSH_FRAME_TYPES = new Set(['chat-complete', 'approval-request', 'chat-error']);
 
+const ntfyNotify = createNtfyNotifier({
+  url: process.env.CODEXMOBILE_NTFY_URL || '',
+  token: process.env.CODEXMOBILE_NTFY_TOKEN || ''
+});
+
 function notifyPush(payload) {
   const detail = payload.sessionId ? getSession(payload.sessionId)?.title || '' : '';
   pushService.notifyForPayload({ ...payload, detail }).catch((error) => {
     console.warn('[push] notify failed:', error?.message || error);
   });
+  const notification = ntfyNotify && notificationFromServerPayload({ ...payload, detail });
+  if (notification) {
+    // Both agents publish to one topic; the suffix says which service it was.
+    ntfyNotify({ ...notification, title: `${notification.title} · ${isClaudeMode() ? 'Claude' : 'Codex'}` })
+      .catch((error) => console.warn('[ntfy] notify failed:', error?.message || error));
+  }
 }
 
 // Build identity of the currently deployed PWA, derived from the Vite content
