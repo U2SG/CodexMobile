@@ -175,6 +175,20 @@ export function createChatQueue({ maxRecentTurns = DEFAULT_MAX_RECENT_TURNS } = 
     };
   }
 
+  // Every conversation that has drafts waiting, for the runs overview.
+  function listPendingQueues() {
+    const out = [];
+    for (const state of conversationQueues.values()) {
+      if (!state.jobs.length) continue;
+      const drafts = state.jobs.map(serializeQueueJob);
+      out.push({
+        sessionId: state.sessionId || drafts[0].sessionId || drafts[0].draftSessionId || null,
+        drafts
+      });
+    }
+    return out;
+  }
+
   function removeQueuedDraft(query = {}) {
     const draftId = String(query.draftId || '').trim();
     if (!draftId) {
@@ -256,6 +270,7 @@ export function createChatQueue({ maxRecentTurns = DEFAULT_MAX_RECENT_TURNS } = 
       return recentTurns.get(turnId) || null;
     },
     listQueue,
+    listPendingQueues,
     peekQueuedDraft,
     rememberConversationAlias,
     rememberTurn,

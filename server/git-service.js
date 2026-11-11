@@ -547,9 +547,23 @@ export function createGitService({ exec = defaultExec, now = () => new Date() } 
     return out;
   }
 
+  // Best-effort branch name for display; null for detached HEAD, non-repos
+  // or any git failure. Never throws.
+  async function currentBranch(repoPath) {
+    if (!repoPath || !path.isAbsolute(repoPath)) return null;
+    try {
+      const result = await runGit(repoPath, ['rev-parse', '--abbrev-ref', 'HEAD'], { timeout: 3000 });
+      const name = result.code === 0 ? String(result.stdout || '').trim() : '';
+      return name && name !== 'HEAD' ? name : null;
+    } catch {
+      return null;
+    }
+  }
+
   return {
     status,
     diff,
+    currentBranch,
     pull,
     commitPush,
     history,

@@ -72,6 +72,7 @@ import { readVoiceUpload as readVoiceUploadFromService } from './upload-service.
 import { createSessionRoutes } from './session-routes.js';
 import { createAssistantFrameThrottle } from './assistant-frame-throttle.js';
 import { createPushService, notificationFromServerPayload } from './push-service.js';
+import { createBranchReader, createRunsOverviewRoutes } from './runs-overview.js';
 import { createNtfyNotifier } from './ntfy-notifier.js';
 import { createPushRoutes } from './push-routes.js';
 import { createPeerRoutes } from './peer-routes.js';
@@ -357,6 +358,14 @@ const searchRoutes = createSearchRoutes({
 
 const gitService = createGitService({});
 const gitRoutes = createGitRoutes({ gitService, getProject: (id) => getProject(id) });
+const runsOverviewRoutes = createRunsOverviewRoutes({
+  getActiveRuns: () => activeRunsSnapshot(),
+  listPendingApprovals: () => listPendingApprovals(),
+  listPendingQueues: () => chatQueue.listPendingQueues(),
+  getSession: (id) => getSession(id),
+  getProject: (id) => getProject(id),
+  readBranch: createBranchReader((cwd) => gitService.currentBranch(cwd))
+});
 
 const fileSessionRoutes = createFileSessionRoutes({
   fileSessionIndex,
@@ -788,6 +797,10 @@ async function handleApi(req, res, url) {
   }
 
   if (await peerRoutes(req, res, { method, pathname, parts, url })) {
+    return;
+  }
+
+  if (await runsOverviewRoutes(req, res, { method, pathname }, sendJson)) {
     return;
   }
 
