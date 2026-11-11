@@ -169,7 +169,7 @@ export async function sendLocalImage(req, res, url, {
         continue;
       }
       const content = await fs.readFile(filePath);
-      sendStaticContent(req, res, 200, content, {
+      await sendStaticContent(req, res, 200, content, {
         'content-type': contentType,
         'cache-control': 'private, max-age=3600',
         'x-content-type-options': 'nosniff'
@@ -191,7 +191,7 @@ export async function sendLocalFile(req, res, url, {
     const ext = path.extname(filePath).toLowerCase();
     const contentType = mimeTypes.get(ext) || 'application/octet-stream';
     const content = await fs.readFile(filePath);
-    sendStaticContent(req, res, 200, content, {
+    await sendStaticContent(req, res, 200, content, {
       'content-type': contentType,
       'cache-control': 'private, max-age=60',
       'content-disposition': inlineContentDisposition(filePath),
@@ -277,7 +277,7 @@ export async function serveFileFromRoot(req, res, rootDir, requestedPath, cacheC
     }
     const ext = path.extname(candidate);
     const content = await fs.readFile(candidate);
-    sendStaticContent(req, res, 200, content, {
+    await sendStaticContent(req, res, 200, content, {
       'content-type': mimeTypes.get(ext) || 'application/octet-stream',
       'cache-control': cacheControl,
       'x-content-type-options': 'nosniff'
@@ -345,7 +345,7 @@ export function createStaticService({
       const filePath = stat.isDirectory() ? path.join(candidate, 'index.html') : candidate;
       const ext = path.extname(filePath);
       const content = await fs.readFile(filePath);
-      sendStaticContent(req, res, 200, content, {
+      await sendStaticContent(req, res, 200, content, {
         'content-type': mimeTypes.get(ext) || 'application/octet-stream',
         'cache-control': staticCacheControl(ext, filePath),
         'x-content-type-options': 'nosniff'
@@ -354,7 +354,7 @@ export function createStaticService({
       const indexPath = path.join(clientDist, 'index.html');
       try {
         const content = await fs.readFile(indexPath);
-        sendStaticContent(req, res, 200, content, {
+        await sendStaticContent(req, res, 200, content, {
           'content-type': 'text/html; charset=utf-8',
           'cache-control': 'no-store',
           'x-content-type-options': 'nosniff'

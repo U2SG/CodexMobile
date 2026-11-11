@@ -8,8 +8,10 @@ import {
   remoteAddress,
   sendHtml,
   sendJson,
-  sendJsonRevalidated
+  sendJsonRevalidated,
+  sendStaticContent
 } from './http-utils.js';
+import { gunzipSync } from 'node:zlib';
 
 function fakeRes() {
   const headers = {};
@@ -175,4 +177,33 @@ test('sendJsonRevalidated answers a matching If-None-Match with a bodiless 304',
   sendJsonRevalidated({ headers: { 'if-none-match': etag } }, changed, { messages: [] });
   assert.equal(changed.statusCode, 200);
   assert.notEqual(changed.headers.etag, etag);
+});
+
+function bufferRes() {
+  const res = { headers: {}, statusCode: 0, body: null, headersSent: false, destroyed: false };
+  res.writeHead = (status, hdrs) => { res.statusCode = status; Object.assign(res.headers, hdrs); res.headersSent = true; };
+  res.end = (chunk) => { res.body = chunk; };
+  return res;
+}
+
+test('sendStaticContent gzips compressible bodies off-thread and reuses the result', async () => {
+  const content = Buffer.from('console.log("static");\n'.repeat(200));
+  const req = { headers: { 'accept-encoding': 'gzip, br' } };
+  const first = bufferRes();
+  await sendStaticContent(req, first, 200, content, { 'content-type': 'text/javascript' }, '.js');
+  assert.equal(first.headers['content-encoding'], 'gzip');
+  assert.equal(first.headers['content-length'], first.body.length);
+  assert.deepEqual(gunzipSync(first.body), content);
+
+  const second = bufferRes();
+  await sendStaticContent(req, second, 200, Buffer.from(content), { 'content-type': 'text/javascript' }, '.js');
+  assert.equal(second.body, first.body, 'identical bodies share one compressed buffer');
+});
+
+test('sendStaticContent sends small or non-gzip requests uncompressed', async () => {
+  const res = bufferRes();
+  const content = Buffer.from('x'.repeat(4096));
+  await sendStaticContent({ headers: {} }, res, 200, content, {}, '.js');
+  assert.equal(res.headers['content-encoding'], undefined);
+  assert.equal(res.body, content);
 });
