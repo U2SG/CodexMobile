@@ -1,12 +1,13 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { constants as zlibConstants, gzip, gzipSync } from 'node:zlib';
+import { constants as zlibConstants, gzip } from 'node:zlib';
 
 export const MAX_JSON_BYTES = 2 * 1024 * 1024;
 
 export const DEFAULT_COMPRESSIBLE_EXTENSIONS = new Set([
   '.html',
   '.js',
+  '.mjs',
   '.css',
   '.json',
   '.webmanifest',
@@ -30,15 +31,45 @@ export function staticCacheControl(ext, filePath = '') {
   return 'public, max-age=3600';
 }
 
-export function sendStaticContent(req, res, status, content, headers, ext, {
+// Static bodies (the 2MB pdf worker, the app bundle) used to be gzipped
+// synchronously on every request, stalling the event loop and with it every
+// streaming socket. Compress off-thread once per distinct body.
+const STATIC_GZIP_CACHE_ENTRIES = 32;
+const staticGzipCache = new Map();
+
+function gzipStaticBody(content) {
+  const key = createHash('sha1').update(content).digest('base64url');
+  const cached = staticGzipCache.get(key);
+  if (cached) {
+    staticGzipCache.delete(key);
+    staticGzipCache.set(key, cached);
+    return cached;
+  }
+  const pending = new Promise((resolve, reject) => {
+    gzip(content, (error, compressed) => (error ? reject(error) : resolve(compressed)));
+  });
+  staticGzipCache.set(key, pending);
+  pending.catch(() => staticGzipCache.delete(key));
+  while (staticGzipCache.size > STATIC_GZIP_CACHE_ENTRIES) {
+    staticGzipCache.delete(staticGzipCache.keys().next().value);
+  }
+  return pending;
+}
+
+export async function sendStaticContent(req, res, status, content, headers, ext, {
   compressibleExtensions = DEFAULT_COMPRESSIBLE_EXTENSIONS
 } = {}) {
   let body = content;
   const nextHeaders = { ...headers };
   if (content.length >= 1024 && compressibleExtensions.has(ext) && acceptsGzip(req)) {
-    body = gzipSync(content);
-    nextHeaders['content-encoding'] = 'gzip';
-    nextHeaders.vary = nextHeaders.vary ? `${nextHeaders.vary}, Accept-Encoding` : 'Accept-Encoding';
+    try {
+      body = await gzipStaticBody(content);
+      nextHeaders['content-encoding'] = 'gzip';
+      nextHeaders.vary = nextHeaders.vary ? `${nextHeaders.vary}, Accept-Encoding` : 'Accept-Encoding';
+    } catch {
+      body = content;
+    }
+    if (res.headersSent || res.destroyed) return;
   }
   nextHeaders['content-length'] = body.length;
   res.writeHead(status, nextHeaders);

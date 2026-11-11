@@ -70,6 +70,7 @@ import { createQuotaRoutes } from './quota-routes.js';
 import { createVoiceRoutes } from './voice-routes.js';
 import { readVoiceUpload as readVoiceUploadFromService } from './upload-service.js';
 import { createSessionRoutes } from './session-routes.js';
+import { createAssistantFrameThrottle } from './assistant-frame-throttle.js';
 import { createPushService } from './push-service.js';
 import { createPushRoutes } from './push-routes.js';
 import { createPeerRoutes } from './peer-routes.js';
@@ -624,7 +625,13 @@ function flushCoalescedFrames(socket, { force = false } = {}) {
   socket.coalescedFrames.clear();
 }
 
+const assistantFrameThrottle = createAssistantFrameThrottle({ deliver: deliverFrame });
+
 function broadcast(payload) {
+  assistantFrameThrottle.send(payload);
+}
+
+function deliverFrame(payload) {
   const serialized = JSON.stringify(payload);
   const coalesceKey = payload?.type === 'assistant-update'
     ? `${payload.turnId || ''}:${payload.messageId || ''}`
@@ -650,6 +657,18 @@ function broadcast(payload) {
   // resolved. Reconnects get the live pending list in the hello frames.
   if (payload?.type === 'approval-request') eventStream.send(payload);
   else eventStream.publish(payload);
+  if (PUSH_FRAME_TYPES.has(payload?.type)) notifyPush(payload);
+}
+
+// Turn outcomes and approvals also go out as Web Push so a backgrounded phone
+// hears about them; the service worker stays quiet while the app is in view.
+const PUSH_FRAME_TYPES = new Set(['chat-complete', 'approval-request', 'chat-error']);
+
+function notifyPush(payload) {
+  const detail = payload.sessionId ? getSession(payload.sessionId)?.title || '' : '';
+  pushService.notifyForPayload({ ...payload, detail }).catch((error) => {
+    console.warn('[push] notify failed:', error?.message || error);
+  });
 }
 
 // Build identity of the currently deployed PWA, derived from the Vite content

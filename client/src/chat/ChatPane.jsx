@@ -4,7 +4,7 @@
 // Wrapped in a class-based error boundary (W11) so a single bad message can't
 // crash the whole chat view.
 
-import { Component, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Component, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { explicitChatJumpBehavior, isNearChatBottom, shouldFollowChatOutput } from '../chat-scroll.js';
 import { markClientTurnLatency } from '../turn-latency.js';
 import { AgentMark } from './AgentMark.jsx';
@@ -44,6 +44,26 @@ function ChatPaneInner({ messages, selectedSession, running, onPreviewImage, onD
   const pinnedBeforeUpdateRef = useRef(true);
   const lastSessionIdRef = useRef(selectedSession?.id || null);
   const [showJumpButton, setShowJumpButton] = useState(false);
+  // The handlers arrive as fresh closures every App render; route them
+  // through a ref so memoized messages are not re-rendered for every
+  // streamed frame just because a callback identity changed.
+  const handlersRef = useRef(null);
+  handlersRef.current = { onPreviewImage, onDeleteMessage, onImplementPlan, onAdjustPlan };
+  const stableHandlers = useMemo(() => ({
+    onPreviewImage: (...args) => handlersRef.current.onPreviewImage?.(...args),
+    onDeleteMessage: (...args) => handlersRef.current.onDeleteMessage?.(...args),
+    onImplementPlan: (...args) => handlersRef.current.onImplementPlan?.(...args),
+    onAdjustPlan: (...args) => handlersRef.current.onAdjustPlan?.(...args)
+  }), []);
+  // agentMeta() builds a new object per call but its content is keyed by id.
+  const stableAgent = useMemo(() => agent, [agent?.id]);
+  const groupMessagesRef = useRef(new Map());
+  const handlers = {
+    onPreviewImage: onPreviewImage ? stableHandlers.onPreviewImage : undefined,
+    onDeleteMessage: onDeleteMessage ? stableHandlers.onDeleteMessage : undefined,
+    onImplementPlan: onImplementPlan ? stableHandlers.onImplementPlan : undefined,
+    onAdjustPlan: onAdjustPlan ? stableHandlers.onAdjustPlan : undefined
+  };
   // Tracks whether we've already snapped to the bottom for the current
   // session. Reset on session change, set after the first non-empty render
   // gets a real scroll. Without this, a session whose messages load
@@ -201,7 +221,24 @@ function ChatPaneInner({ messages, selectedSession, running, onPreviewImage, onD
     flush();
     return groups;
   }
+  // Reuse a group's previous messages array when its members are unchanged so
+  // the memoized TurnGroup skips re-rendering finished turns.
   const turnGroups = buildTurnGroups(messages);
+  const previousGroupMessages = groupMessagesRef.current;
+  const nextGroupMessages = new Map();
+  for (const group of turnGroups) {
+    const previous = previousGroupMessages.get(group.key);
+    if (
+      previous &&
+      previous.length === group.messages.length &&
+      previous.every((message, index) => message === group.messages[index])
+    ) {
+      group.messages = previous;
+    }
+    nextGroupMessages.set(group.key, group.messages);
+  }
+  groupMessagesRef.current = nextGroupMessages;
+  const renderedAt = Date.now();
 
   return (
     <section ref={paneRef} className="chat-pane">
@@ -211,11 +248,9 @@ function ChatPaneInner({ messages, selectedSession, running, onPreviewImage, onD
             <ChatMessage
               key={group.key}
               message={group.messages[0]}
-              onPreviewImage={onPreviewImage}
-              onDeleteMessage={onDeleteMessage}
-              onImplementPlan={onImplementPlan}
-              onAdjustPlan={onAdjustPlan}
-              agent={agent}
+              now={isLiveMessage(group.messages[0]) ? renderedAt : undefined}
+              {...handlers}
+              agent={stableAgent}
               turnPosition="sole"
             />
           );
@@ -224,12 +259,11 @@ function ChatPaneInner({ messages, selectedSession, running, onPreviewImage, onD
           <TurnGroup
             key={group.key}
             messages={group.messages}
-            agent={agent}
-            now={Date.now()}
-            onPreviewImage={onPreviewImage}
-            onDeleteMessage={onDeleteMessage}
-            onImplementPlan={onImplementPlan}
-            onAdjustPlan={onAdjustPlan}
+            agent={stableAgent}
+            // Only a running group shows a live elapsed time; a fixed
+            // `now` lets finished groups skip re-rendering.
+            now={group.messages.some(isLiveMessage) ? renderedAt : undefined}
+            {...handlers}
           />
         );
       })}
@@ -241,6 +275,10 @@ function ChatPaneInner({ messages, selectedSession, running, onPreviewImage, onD
       <div ref={bottomRef} />
     </section>
   );
+}
+
+function isLiveMessage(message) {
+  return message?.status === 'running' || message?.status === 'queued';
 }
 
 export function ChatPane(props) {

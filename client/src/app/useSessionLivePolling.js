@@ -27,7 +27,8 @@ export function useSessionLivePolling({
     let stopped = false;
 
     async function pollSelectedSession() {
-      if (stopped || pollingRef.current) {
+      // A backgrounded tab cannot show the result; resume on visibility.
+      if (stopped || pollingRef.current || document.hidden) {
         return;
       }
       const hasExternalThreadRefresh = Boolean(
@@ -62,10 +63,15 @@ export function useSessionLivePolling({
 
     const intervalMs = running ? 900 : 2500;
     const timer = window.setInterval(pollSelectedSession, intervalMs);
+    const pollWhenVisible = () => {
+      if (!document.hidden) pollSelectedSession();
+    };
+    document.addEventListener('visibilitychange', pollWhenVisible);
     pollSelectedSession();
     return () => {
       stopped = true;
       window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', pollWhenVisible);
     };
   }, [
     authenticated,

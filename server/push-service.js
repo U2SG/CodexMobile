@@ -29,28 +29,39 @@ function normalizeSubscription(subscription = {}) {
   };
 }
 
+const PUSH_BODY_MAX_CHARS = 180;
+
+function clip(text) {
+  const value = String(text || '').replace(/\s+/g, ' ').trim();
+  return value.length > PUSH_BODY_MAX_CHARS ? `${value.slice(0, PUSH_BODY_MAX_CHARS - 1)}…` : value;
+}
+
+// Maps the frames the server actually broadcasts to a notification.
+// `detail` is the session title, attached by the caller when known.
 export function notificationFromServerPayload(payload = {}) {
   if (!payload || typeof payload !== 'object') return null;
   const type = payload.type;
-  if (type === 'chat-completed') {
+  const detail = clip(payload.detail);
+  if (type === 'chat-complete') {
     return {
       level: 'success',
       title: '任务已完成',
-      body: payload.detail || payload.summary || 'Codex 已处理完当前任务。'
+      body: detail || '当前任务已处理完成。'
     };
   }
-  if (type === 'approval-needed') {
+  if (type === 'approval-request') {
     return {
       level: 'warning',
       title: '需要处理',
-      body: payload.label || payload.detail || 'Codex 正在等待你的确认或输入。'
+      body: detail || '正在等待你的确认或输入。'
     };
   }
-  if (type === 'error') {
+  if (type === 'chat-error') {
+    const error = clip(payload.error);
     return {
       level: 'error',
       title: '任务失败',
-      body: payload.error || payload.detail || 'Codex 执行时遇到错误。'
+      body: [detail, error].filter(Boolean).join('：') || '执行时遇到错误。'
     };
   }
   return null;
@@ -244,11 +255,14 @@ export function createPushService({
   async function notifyForPayload(serverPayload) {
     const notification = notificationFromServerPayload(serverPayload);
     if (!notification) return { sent: 0, removed: 0 };
+    // Web Push payloads are capped near 4KB; approval frames can carry whole
+    // diffs, so only identifiers travel with the notification.
+    const sessionId = serverPayload?.sessionId || null;
     return sendNotification({
       ...notification,
-      tag: `codexmobile-${serverPayload?.type || notification.title}`,
+      tag: `codexmobile-${serverPayload.type}-${sessionId || 'global'}`,
       url: '/',
-      data: serverPayload || null
+      data: { type: serverPayload.type, sessionId }
     });
   }
 

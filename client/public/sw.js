@@ -39,7 +39,17 @@ self.addEventListener('push', (event) => {
       level: payload.level || 'info'
     }
   };
-  event.waitUntil(self.registration.showNotification(title, options));
+  event.waitUntil(
+    (async () => {
+      // The open app already shows turn results and approval sheets; a
+      // system notification on top of that is noise.
+      const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      if (windows.some((client) => client.focused && client.visibilityState === 'visible')) {
+        return;
+      }
+      await self.registration.showNotification(title, options);
+    })()
+  );
 });
 
 self.addEventListener('notificationclick', (event) => {
