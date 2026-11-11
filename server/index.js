@@ -73,6 +73,7 @@ import { createSessionRoutes } from './session-routes.js';
 import { createAssistantFrameThrottle } from './assistant-frame-throttle.js';
 import { createPushService, notificationFromServerPayload } from './push-service.js';
 import { createBranchReader, createRunsOverviewRoutes } from './runs-overview.js';
+import { createKeepAwake } from './keep-awake.js';
 import { createNtfyNotifier } from './ntfy-notifier.js';
 import { createPushRoutes } from './push-routes.js';
 import { createPeerRoutes } from './peer-routes.js';
@@ -358,6 +359,12 @@ const searchRoutes = createSearchRoutes({
 
 const gitService = createGitService({});
 const gitRoutes = createGitRoutes({ gitService, getProject: (id) => getProject(id) });
+// Opt-in (CODEXMOBILE_KEEP_AWAKE=1, macOS): no idle sleep while turns run.
+const keepAwake = createKeepAwake();
+setInterval(() => {
+  keepAwake.update(activeRunsSnapshot().length > 0 || listPendingApprovals().length > 0);
+}, 10000).unref();
+
 const runsOverviewRoutes = createRunsOverviewRoutes({
   getActiveRuns: () => activeRunsSnapshot(),
   listPendingApprovals: () => listPendingApprovals(),
