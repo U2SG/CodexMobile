@@ -45,6 +45,7 @@ import {
   upsertStatusMessage
 } from '../chat/activity-model.js';
 import { selectedSkillsAsBodyEntries } from '../skills/skill-selection.js';
+import { sendWithRetry } from './send-retry.js';
 import {
   aliasClientTurnLatency,
   beginClientTurnLatency,
@@ -58,6 +59,10 @@ import {
   titleFromFirstMessage,
   upsertSessionInProject
 } from './session-utils.js';
+
+// Turns the user stopped while their send was still being retried: the
+// retry loop must not deliver them after the fact.
+const abandonedTurnIds = new Set();
 
 export function sendModeForRunningFollowup({ running = false, canGuideCurrentTask = false } = {}) {
   if (!running) {
@@ -207,8 +212,20 @@ export function useTurnSubmission({
       )
     );
 
+    const turnKey = { turnId, sessionId: optimisticSessionId, previousSessionId: draftSessionId || outgoingSessionId };
+    const paintStatus = (...payloads) => {
+      if (!payloadMatchesCurrentConversation(turnKey)) return;
+      const timestamp = new Date().toISOString();
+      setMessages((current) => payloads.reduce(
+        (list, payload) => upsertStatusMessage(list, { sessionId: optimisticSessionId, turnId, timestamp, ...payload }),
+        current
+      ));
+    };
+    let retried = false;
     try {
-      const result = await apiFetch('/api/chat/send', {
+      // Same clientTurnId on every attempt: the server returns the original
+      // turn if an earlier attempt did arrive.
+      const result = await sendWithRetry(() => apiFetch('/api/chat/send', {
         method: 'POST',
         body: {
           projectId: project.id,
@@ -228,7 +245,17 @@ export function useTurnSubmission({
           attachments: selectedAttachments,
           selectedSkills: selectedSkillsAsBodyEntries(selectedSkills)
         }
+      }), {
+        shouldContinue: () => !abandonedTurnIds.has(turnId),
+        onRetry: () => {
+          retried = true;
+          paintStatus({ kind: 'turn', status: 'running', label: '网络中断，正在重试发送…' });
+        }
       });
+      abandonedTurnIds.delete(turnId);
+      if (retried) {
+        paintStatus({ kind: 'turn', status: 'running', label: '正在处理' }, { kind: 'reasoning', status: 'running' });
+      }
       markClientTurnLatency(turnId, 'sendResponse');
       aliasClientTurnLatency(turnId, result.turnId || turnId);
       if (result.requiresConfirmation && result.confirmationType === 'image-intent') {
@@ -270,13 +297,16 @@ export function useTurnSubmission({
         previousSessionId: draftSessionId || outgoingSessionId
       };
     } catch (error) {
+      abandonedTurnIds.delete(turnId);
       finishClientTurnLatency(turnId, 'send-error');
       const failKey = { turnId, sessionId: optimisticSessionId, previousSessionId: draftSessionId || outgoingSessionId };
       clearRun(failKey);
       if (clearComposer) {
         setAttachments(selectedAttachments);
       }
-      if (restoreTextOnError) {
+      // A typed message was cleared from the composer on send; put it back so
+      // a failed send (e.g. network gone for minutes) does not lose it.
+      if (restoreTextOnError || clearComposer) {
         restoreVoiceTextToInput(displayMessage);
       }
       // Don't paint the send failure into a different conversation if the user
@@ -376,6 +406,7 @@ export function useTurnSubmission({
     if (!turnId && !sessionId) {
       return;
     }
+    abandonedTurnIds.add(turnId);
     const completedAt = new Date().toISOString();
     const abortPayload = {
       sessionId,

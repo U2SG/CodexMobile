@@ -1,4 +1,5 @@
 import { createChatQueue } from './chat-queue.js';
+import { createIdempotentRunner } from './idempotent-send.js';
 import {
   assertDesktopBridgeAvailable,
   backgroundFallbackBridge,
@@ -295,6 +296,8 @@ export function createChatService({
       onQueueDrained: () => setTimeout(() => runNextQueuedChat(queueKey), 0)
     });
   }
+
+  const idempotentSend = createIdempotentRunner();
 
   async function sendChat(body, { remoteAddress = '' } = {}) {
     const requestReceivedAtMs = Date.now();
@@ -751,7 +754,7 @@ export function createChatService({
     listQueue: chatQueue.listQueue,
     removeQueuedDraft: chatQueue.removeQueuedDraft,
     restoreQueuedDraft: chatQueue.restoreQueuedDraft,
-    sendChat,
+    sendChat: (body, options) => idempotentSend(String(body?.clientTurnId || '').trim(), () => sendChat(body, options)),
     sessionHasActiveWork,
     steerQueuedDraft
   };
