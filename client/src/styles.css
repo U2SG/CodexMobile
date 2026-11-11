@@ -5447,6 +5447,28 @@ button {
   justify-self: center;
 }
 
+/* The runs pill takes its own column so the row never wraps (the row is
+   16px tall and clips overflow). */
+.top-meta.has-runs {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.top-meta.is-status-only.has-runs {
+  grid-template-columns: auto auto;
+  justify-content: center;
+}
+
+.top-meta .runs-pill {
+  min-height: 0;
+  height: 16px;
+  padding: 0 6px;
+  line-height: 15px;
+}
+
+.top-meta .runs-pill::after {
+  inset: -14px -4px;
+}
+
 .chat-pane {
   padding: 18px 18px 14px;
   background: #ffffff;
@@ -8436,4 +8458,113 @@ button {
   margin-top: 8px;
   min-height: 44px;
   padding: 0 16px;
+}
+
+/* Runs overview: top-bar pill + "进行中" sheet */
+.runs-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  min-height: 22px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent-soft, rgba(16, 163, 127, 0.12));
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-sm);
+  line-height: 16px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.runs-pill {
+  position: relative;
+}
+
+/* Visual pill stays 22px to fit the top-meta row; the tap area is 44px. */
+.runs-pill::after {
+  content: '';
+  position: absolute;
+  inset: -11px -4px;
+}
+
+.runs-pill__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #10a37f;
+  animation: runs-pill-pulse 1.6s ease-in-out infinite;
+}
+
+.runs-pill.has-approval .runs-pill__dot {
+  background: #d97706;
+}
+
+@keyframes runs-pill-pulse {
+  50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .runs-pill__dot { animation: none; }
+}
+
+.runs-sheet__close {
+  margin: -8px -8px -8px 0;
+}
+
+.runs-sheet__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.runs-sheet__row {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  min-height: 56px;
+  padding: 10px 12px;
+  border: 1px solid var(--line, rgba(0, 0, 0, 0.08));
+  border-radius: var(--radius-lg, 12px);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.runs-sheet__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.runs-sheet__row.is-running .runs-sheet__status { color: #10a37f; }
+.runs-sheet__row.is-approval .runs-sheet__status { color: #d97706; }
+
+.runs-sheet__title {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runs-sheet__context {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runs-sheet__empty {
+  margin: 8px 0;
+  color: var(--muted);
 }

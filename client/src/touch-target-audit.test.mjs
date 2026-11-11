@@ -100,6 +100,8 @@ const ALLOWLIST = new Set([
   '.attachment-chip small',
   '.attachment-chip button',
   '.peer-pill',
+  '.runs-pill',  // sits in the top-meta row next to .peer-pill; ::after extends the hit area to 44px
+  '.top-meta .runs-pill',
   '.permission-pill',
   '.drawer-search-chip',
   '.drawer-search-filters > .drawer-search-chip',
