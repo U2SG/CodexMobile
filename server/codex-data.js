@@ -39,6 +39,7 @@ import {
   readHiddenSessionIds
 } from './session-local-state.js';
 import { createSessionMessageReader } from './session-message-reader.js';
+import { createJsonlIncrementalCache } from './jsonl-incremental-cache.js';
 import { cleanUserTextForTitle } from './claude-title-source.js';
 
 let cache = {
@@ -1342,36 +1343,114 @@ function paginateMessages(messages, { limit = 120, offset = null, latest = true 
   };
 }
 
-async function readLegacySessionMessages(sessionId, { limit = 120, offset = null, latest = true } = {}) {
-  const filePath = await findSessionFile(sessionId);
-  const mobileMessages = await readMobileSessionMessages(sessionId);
-  const deletedIds = await readDeletedMessageIds(sessionId);
-  if (!filePath) {
-    return paginateMessages(filterDeletedMessages(mobileMessages, deletedIds), { limit, offset, latest });
+function createLegacyParseState() {
+  return {
+    messages: [],
+    parsedUserMessages: new WeakSet(),
+    // Claude / legacy codex history files have no explicit "turn boundary"
+    // marker the way modern codex rollouts do (`turn_context`). To let the
+    // client group multi-segment assistant replies into one visual bubble,
+    // we synthesize a turn id whenever a user message appears and tag every
+    // following assistant/plan record with it until the next user.
+    currentTurnId: null,
+    synthTurnCounter: 0
+  };
+}
+
+function pushLegacyAssistantContent(state, baseId, content, timestamp, role = 'assistant') {
+  const proposedPlan = extractProposedPlanContent(content);
+  if (proposedPlan) {
+    const planMsg = planMessageFromContent({ id: `${baseId}-plan`, content: proposedPlan, timestamp });
+    const reqMsg = planRequestMessageFromContent({ id: `${baseId}-plan-request`, content: proposedPlan, timestamp });
+    if (planMsg) { planMsg.turnId = state.currentTurnId; state.messages.push(planMsg); }
+    if (reqMsg) { reqMsg.turnId = state.currentTurnId; state.messages.push(reqMsg); }
+  } else {
+    state.messages.push({ id: baseId, role, content, timestamp, turnId: state.currentTurnId });
+  }
+}
+
+function applyLegacySessionEntry(state, entry) {
+  const { messages } = state;
+  const timestamp = entry.timestamp || null;
+
+  if (isClaudeMode()) {
+    if (isVisibleClaudeUserMessage(entry)) {
+      const userId = entry.uuid || `${entry.timestamp || messages.length}-user`;
+      state.currentTurnId = `turn-${entry.uuid || ++state.synthTurnCounter}`;
+      const userMessage = {
+        id: userId,
+        role: 'user',
+        content: sanitizeVisibleUserMessage(extractContent(entry.message.content)),
+        timestamp,
+        turnId: state.currentTurnId
+      };
+      state.parsedUserMessages.add(userMessage);
+      messages.push(userMessage);
+    }
+
+    const assistantContent = extractClaudeAssistantContent(entry);
+    if (assistantContent.trim()) {
+      const baseId = entry.uuid || entry.message?.id || `${entry.timestamp || messages.length}-assistant`;
+      pushLegacyAssistantContent(state, baseId, assistantContent, timestamp);
+    }
+    return;
   }
 
-  const messages = [];
-  const stream = fsSync.createReadStream(filePath, { encoding: 'utf8' });
-  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  // User turns come from `response_item` messages, present in both the
+  // pre- and post-0.149 rollout formats (0.149 dropped the `event_msg`
+  // user_message row entirely). Same rows the three-layer reader renders,
+  // so the two paths agree on what a "message" is.
+  if (
+    entry.type === 'response_item' &&
+    entry.payload?.type === 'message' &&
+    entry.payload.role === 'user'
+  ) {
+    const userContent = sanitizeVisibleUserMessage(extractContent(entry.payload.content));
+    if (userContent.trim() && !isCodexSystemNoiseBlock(userContent)) {
+      const userId = entry.payload.id || `${entry.timestamp || messages.length}-user`;
+      state.currentTurnId = `turn-${userId}`;
+      messages.push({
+        id: userId,
+        role: 'user',
+        content: userContent,
+        timestamp,
+        turnId: state.currentTurnId
+      });
+    }
+  }
 
-  // Claude / legacy codex history files have no explicit "turn boundary"
-  // marker the way modern codex rollouts do (`turn_context`). To let the
-  // client group multi-segment assistant replies into one visual bubble,
-  // we synthesize a turn id whenever a user message appears and tag every
-  // following assistant/plan record with it until the next user.
-  let currentTurnId = null;
-  let synthTurnCounter = 0;
+  if (
+    entry.type === 'response_item' &&
+    entry.payload?.type === 'message' &&
+    entry.payload.role === 'assistant' &&
+    entry.payload.phase !== 'commentary'
+  ) {
+    const content = extractContent(entry.payload.content);
+    if (content.trim()) {
+      const baseId = entry.payload.id || `${entry.timestamp || messages.length}-assistant`;
+      pushLegacyAssistantContent(state, baseId, content, timestamp, entry.payload.role || 'assistant');
+    }
+  }
+}
 
-  // The PWA stores each outgoing user message locally before claude-code
-  // ever sees it; the claude CLI then logs the same message back to its
-  // session file, often with a `<cwd-basename>\n` prefix it injects. Both
-  // copies surface in the merged view — same role, same logical send, two
-  // different ids — and the user sees their bubble twice. Build a content
-  // lookup of the mobile copies up-front; when we encounter a parsed user
-  // message whose body (or its tail after the cwd prefix) matches one of
-  // them, skip the parsed copy and let the merge below carry the cleaner
-  // mobile version into the message list. We still bump `currentTurnId`
-  // so the assistant replies that follow get the right grouping anchor.
+const legacySessionParseCache = createJsonlIncrementalCache({
+  createState: createLegacyParseState,
+  applyEntry: (state, entry) => {
+    try {
+      applyLegacySessionEntry(state, entry);
+    } catch {
+      // Skip rows whose shape the extractors cannot handle.
+    }
+  }
+});
+
+// The PWA stores each outgoing user message locally before claude-code ever
+// sees it; the claude CLI then logs the same message back to its session
+// file, often with a `<cwd-basename>\n` prefix it injects. Both copies would
+// surface in the merged view, so a parsed Claude user message whose body (or
+// its tail after the cwd prefix) matches a mobile copy is dropped and the
+// cleaner mobile version is carried by the merge instead.
+function createMobileUserDupeCheck(mobileMessages) {
   const mobileUserContents = new Set();
   for (const m of mobileMessages) {
     if (m.role === 'user' && typeof m.content === 'string') {
@@ -1379,7 +1458,7 @@ async function readLegacySessionMessages(sessionId, { limit = 120, offset = null
       if (trimmed) mobileUserContents.add(trimmed);
     }
   }
-  function parsedUserDupesMobile(content) {
+  return (content) => {
     const trimmed = String(content || '').trim();
     if (!trimmed || mobileUserContents.size === 0) return false;
     if (mobileUserContents.has(trimmed)) return true;
@@ -1389,105 +1468,39 @@ async function readLegacySessionMessages(sessionId, { limit = 120, offset = null
       if (tail && mobileUserContents.has(tail)) return true;
     }
     return false;
-  }
+  };
+}
 
-  for await (const line of rl) {
-    if (!line.trim()) {
-      continue;
-    }
-    try {
-      const entry = JSON.parse(line);
-      const timestamp = entry.timestamp || null;
-
-      if (isClaudeMode()) {
-        if (isVisibleClaudeUserMessage(entry)) {
-          const userId = entry.uuid || `${entry.timestamp || messages.length}-user`;
-          currentTurnId = `turn-${entry.uuid || ++synthTurnCounter}`;
-          const userContent = sanitizeVisibleUserMessage(extractContent(entry.message.content));
-          if (!parsedUserDupesMobile(userContent)) {
-            messages.push({
-              id: userId,
-              role: 'user',
-              content: userContent,
-              timestamp,
-              turnId: currentTurnId
-            });
-          }
-        }
-
-        const assistantContent = extractClaudeAssistantContent(entry);
-        if (assistantContent.trim()) {
-          const baseId = entry.uuid || entry.message?.id || `${entry.timestamp || messages.length}-assistant`;
-          const proposedPlan = extractProposedPlanContent(assistantContent);
-          if (proposedPlan) {
-            const planMsg = planMessageFromContent({ id: `${baseId}-plan`, content: proposedPlan, timestamp });
-            const reqMsg = planRequestMessageFromContent({ id: `${baseId}-plan-request`, content: proposedPlan, timestamp });
-            if (planMsg) { planMsg.turnId = currentTurnId; messages.push(planMsg); }
-            if (reqMsg) { reqMsg.turnId = currentTurnId; messages.push(reqMsg); }
-          } else {
-            messages.push({ id: baseId, role: 'assistant', content: assistantContent, timestamp, turnId: currentTurnId });
-          }
-        }
-        continue;
-      }
-
-      // User turns come from `response_item` messages, present in both the
-      // pre- and post-0.149 rollout formats (0.149 dropped the `event_msg`
-      // user_message row entirely). Same rows the three-layer reader renders,
-      // so the two paths agree on what a "message" is.
-      if (
-        entry.type === 'response_item' &&
-        entry.payload?.type === 'message' &&
-        entry.payload.role === 'user'
-      ) {
-        const userContent = sanitizeVisibleUserMessage(extractContent(entry.payload.content));
-        if (userContent.trim() && !isCodexSystemNoiseBlock(userContent)) {
-          const userId = entry.payload.id || `${entry.timestamp || messages.length}-user`;
-          currentTurnId = `turn-${userId}`;
-          messages.push({
-            id: userId,
-            role: 'user',
-            content: userContent,
-            timestamp,
-            turnId: currentTurnId
-          });
-        }
-      }
-
-      if (
-        entry.type === 'response_item' &&
-        entry.payload?.type === 'message' &&
-        entry.payload.role === 'assistant' &&
-        entry.payload.phase !== 'commentary'
-      ) {
-        const content = extractContent(entry.payload.content);
-        if (content.trim()) {
-          const baseId = entry.payload.id || `${entry.timestamp || messages.length}-assistant`;
-          const proposedPlan = extractProposedPlanContent(content);
-          if (proposedPlan) {
-            const planMsg = planMessageFromContent({ id: `${baseId}-plan`, content: proposedPlan, timestamp });
-            const reqMsg = planRequestMessageFromContent({ id: `${baseId}-plan-request`, content: proposedPlan, timestamp });
-            if (planMsg) { planMsg.turnId = currentTurnId; messages.push(planMsg); }
-            if (reqMsg) { reqMsg.turnId = currentTurnId; messages.push(reqMsg); }
-          } else {
-            messages.push({ id: baseId, role: entry.payload.role || 'assistant', content, timestamp, turnId: currentTurnId });
-          }
-        }
-      }
-
-    } catch {
-      // Skip malformed rows.
-    }
-  }
-
+function mergeMobileMessages(messages, mobileMessages) {
+  const seenIds = new Set(messages.map((item) => item.id));
   for (const message of mobileMessages) {
-    if (!messages.some((item) => item.id === message.id)) {
+    if (!seenIds.has(message.id)) {
       messages.push(message);
     }
   }
   messages.sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0));
+  return messages;
+}
 
-  return paginateMessages(filterDeletedMessages(messages, deletedIds), { limit, offset, latest });
+async function readLegacySessionMessages(sessionId, { limit = 120, offset = null, latest = true } = {}) {
+  const filePath = await findSessionFile(sessionId);
+  const mobileMessages = await readMobileSessionMessages(sessionId);
+  const deletedIds = await readDeletedMessageIds(sessionId);
+  if (!filePath) {
+    return paginateMessages(filterDeletedMessages(mobileMessages, deletedIds), { limit, offset, latest });
+  }
+
+  const state = await legacySessionParseCache.read(filePath);
+  const dupesMobile = createMobileUserDupeCheck(mobileMessages);
+  // The cached state is shared across requests: build a fresh array and
+  // copy the page so nothing downstream mutates cached message objects.
+  const messages = state.messages.filter(
+    (message) => !(state.parsedUserMessages.has(message) && dupesMobile(message.content))
+  );
+  mergeMobileMessages(messages, mobileMessages);
+
+  const page = paginateMessages(filterDeletedMessages(messages, deletedIds), { limit, offset, latest });
+  return { ...page, messages: page.messages.map((message) => ({ ...message })) };
 }
 
 export async function readSessionMessages(
@@ -1524,13 +1537,10 @@ export async function readSessionMessages(
     return readLegacySessionMessages(sessionId, { limit, offset, latest });
   }
 
-  const messages = Array.isArray(result.messages) ? [...result.messages] : [];
-  for (const message of mobileMessages) {
-    if (!messages.some((item) => item.id === message.id)) {
-      messages.push(message);
-    }
-  }
-  messages.sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0));
+  const messages = mergeMobileMessages(
+    Array.isArray(result.messages) ? [...result.messages] : [],
+    mobileMessages
+  );
 
   return {
     ...paginateMessages(filterDeletedMessages(messages, deletedIds), { limit, offset, latest }),
