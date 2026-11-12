@@ -1085,3 +1085,112 @@
   padding: 6px;
   font-size: var(--fs-sm);
 }
+
+/* Diff review: tap/selected rows, inline comments, compose bar */
+.git-panel .diff-view .diff-line {
+  cursor: pointer;
+}
+
+.git-panel .diff-view .diff-line.is-selected {
+  box-shadow: inset 3px 0 0 var(--accent);
+  background: rgba(16, 163, 127, 0.14);
+}
+
+.git-panel .diff-view .diff-comment {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 2px 0 6px;
+  padding: 6px 8px;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 var(--radius-lg) var(--radius-lg) 0;
+  background: var(--panel-2);
+  color: var(--text);
+  font-family: inherit;
+  white-space: pre-wrap;
+}
+
+.git-panel .diff-view .diff-comment-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.git-panel .diff-view .diff-comment-delete {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--touch);
+  min-height: var(--touch);
+  margin: -14px -8px -14px 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.git-panel .review-compose,
+.git-panel .review-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.git-panel .review-footer {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.git-panel .review-footer .primary-btn {
+  flex: 0 0 auto;
+}
+
+.git-panel .review-compose-target {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-panel .review-compose textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 16px; /* >=16px keeps mobile browsers from zooming on focus */
+  resize: vertical;
+}
+
+.git-panel .review-compose-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.git-panel .review-compose-actions .primary-btn {
+  flex: 0 0 auto;
+}
+
+/* Keep the diff header buttons on one line; the file name ellipsizes instead. */
+.diff-modal-actions {
+  flex: none;
+}
+
+.diff-modal-actions .ghost-btn {
+  white-space: nowrap;
+}
+
+.git-panel .diff-modal-header > span.diff-modal-title {
+  flex: 1 1 auto;
+}

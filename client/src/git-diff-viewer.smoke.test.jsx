@@ -2,7 +2,7 @@
 //   1. Breadcrumb splits the path into clickable segments + chevrons
 //   2. onPathClick fires with the prefix path (not just the segment)
 //   3. Each diff line is wrapped in a span carrying data-line-index
-//   4. onSelectionChange fires with {file, commit, startLine, endLine, text}
+//   4. onSelectionChange fires with {file, commit, startIndex, endIndex, rangeLabel, text}
 //      when the user selects across multiple lines inside the body
 //   5. commit + staged tags render when given
 
@@ -144,9 +144,49 @@ test('selectionchange fires onSelectionChange with start/end lines and text', as
   const last = events[events.length - 1];
   expect(last.file).toBe('src/foo.js');
   expect(last.commit).toBe('abcdef0');
-  expect(last.startLine).toBe(6);
-  expect(last.endLine).toBe(8);
+  expect(last.startIndex).toBe(5);
+  expect(last.endIndex).toBe(7);
+  // File line numbers from the hunk header, not positions in the diff text.
+  expect(last.rangeLabel).toBe('第 1-2 行');
   expect(last.text.length).toBeGreaterThan(0);
+});
+
+test('tapping rows selects one line, a second tap extends, tapping the single line again clears', async () => {
+  vi.restoreAllMocks(); // the previous test stubs a non-collapsed window.getSelection
+  const events = [];
+  await act(async () => {
+    root.render(<GitDiffViewer diff={SAMPLE_DIFF} file="src/foo.js" onSelectionChange={(s) => events.push(s)} />);
+  });
+  const rows = () => container.querySelectorAll('.diff-line[data-line-index]');
+  await act(async () => rows()[7].click());
+  expect(events.at(-1)).toMatchObject({ startIndex: 7, endIndex: 7, rangeLabel: '第 2 行', text: '+added line' });
+  await act(async () => rows()[5].click());
+  expect(events.at(-1)).toMatchObject({ startIndex: 5, endIndex: 7, rangeLabel: '第 1-2 行' });
+  expect(container.querySelectorAll('.diff-line.is-selected')).toHaveLength(3);
+  await act(async () => rows()[6].click());
+  expect(events.at(-1)).toMatchObject({ startIndex: 6, endIndex: 6, rangeLabel: '原第 2 行（已删除）' });
+  await act(async () => rows()[6].click());
+  expect(events.at(-1)).toBeNull();
+  expect(container.querySelectorAll('.diff-line.is-selected')).toHaveLength(0);
+});
+
+test('renders saved comments under their last row with a delete action', async () => {
+  const onDeleteComment = vi.fn();
+  await act(async () => {
+    root.render(
+      <GitDiffViewer
+        diff={SAMPLE_DIFF}
+        file="src/foo.js"
+        comments={[{ id: 'c1', endIndex: 7, body: '改成 const' }]}
+        onDeleteComment={onDeleteComment}
+      />
+    );
+  });
+  const comment = container.querySelector('.diff-comment');
+  expect(comment.textContent).toContain('改成 const');
+  expect(comment.previousElementSibling.dataset.lineIndex).toBe('7');
+  await act(async () => comment.querySelector('.diff-comment-delete').click());
+  expect(onDeleteComment).toHaveBeenCalledWith('c1');
 });
 
 test('renders "近期改过" badges when /api/files/sessions returns sessions', async () => {

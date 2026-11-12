@@ -9,11 +9,15 @@ import {
   ArrowUpToLine,
   FileDiff,
   Quote,
-  AtSign
+  AtSign,
+  MessageSquarePlus,
+  Send
 } from 'lucide-react';
 import { apiFetch } from './api.js';
 import { GitHistoryPanel } from './git-history-panel.jsx';
 import { GitDiffViewer } from './git-diff-viewer.jsx';
+import { formatDiffQuote, formatReviewMessage } from './git-diff-lines.js';
+import { loadReviewComments, saveReviewComments } from './git-review-store.js';
 import { SessionHistoryPanel } from './session-history-panel.jsx';
 import './git-panel.css';
 
@@ -90,7 +94,11 @@ export function GitPanel({ project, onClose, onInsertIntoComposer, onSelectSessi
   const [error, setError] = useState('');
   const [expanded, setExpanded] = useState({ staged: true, modified: true, untracked: false });
   const [diffFile, setDiffFile] = useState(null); // { file, staged, commit, diff, loading, error }
-  const [diffSelection, setDiffSelection] = useState(null); // { file, commit, startLine, endLine, text }
+  const [diffSelection, setDiffSelection] = useState(null); // { file, commit, startIndex, endIndex, rangeLabel, text }
+  // Review comments collected across files, sent to the agent as one message.
+  const [reviewComments, setReviewComments] = useState(() => loadReviewComments(project?.id));
+  const [commentDraft, setCommentDraft] = useState(null); // string while composing, else null
+  const [selectionResetKey, setSelectionResetKey] = useState(0);
   // Read-only preview of a session before committing to switch the chat
   // (mindfs-style preview→confirm). null when no badge is open.
   const [previewSession, setPreviewSession] = useState(null);
@@ -103,6 +111,46 @@ export function GitPanel({ project, onClose, onInsertIntoComposer, onSelectSessi
   const [actionResult, setActionResult] = useState(null); // { kind, ...payload }
 
   const projectId = project?.id;
+
+  useEffect(() => {
+    setReviewComments(loadReviewComments(projectId));
+  }, [projectId]);
+
+  const updateReviewComments = useCallback((updater) => {
+    setReviewComments((current) => {
+      const next = typeof updater === 'function' ? updater(current) : updater;
+      saveReviewComments(projectId, next);
+      return next;
+    });
+  }, [projectId]);
+
+  const saveComment = useCallback(() => {
+    const body = String(commentDraft || '').trim();
+    if (!body || !diffSelection?.text) return;
+    updateReviewComments((current) => [...current, {
+      id: `c-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      file: diffSelection.file,
+      commit: diffSelection.commit || null,
+      startIndex: diffSelection.startIndex,
+      endIndex: diffSelection.endIndex,
+      rangeLabel: diffSelection.rangeLabel,
+      text: diffSelection.text,
+      body
+    }]);
+    setCommentDraft(null);
+    setDiffSelection(null);
+    setSelectionResetKey((key) => key + 1);
+  }, [commentDraft, diffSelection, updateReviewComments]);
+
+  const deleteComment = useCallback((id) => {
+    updateReviewComments((current) => current.filter((comment) => comment.id !== id));
+  }, [updateReviewComments]);
+
+  const sendReview = useCallback(() => {
+    if (!reviewComments.length || !onInsertIntoComposer) return;
+    onInsertIntoComposer(formatReviewMessage(reviewComments));
+    updateReviewComments([]);
+  }, [onInsertIntoComposer, reviewComments, updateReviewComments]);
 
   const loadStatus = useCallback(async () => {
     if (!projectId) return;
@@ -196,6 +244,7 @@ export function GitPanel({ project, onClose, onInsertIntoComposer, onSelectSessi
   const closeDiff = useCallback(() => {
     setDiffFile(null);
     setDiffSelection(null);
+    setCommentDraft(null);
   }, []);
 
   const insertRef = useCallback(() => {
@@ -208,19 +257,9 @@ export function GitPanel({ project, onClose, onInsertIntoComposer, onSelectSessi
 
   const insertSelection = useCallback(() => {
     if (!diffSelection || !diffSelection.text || !onInsertIntoComposer) return;
-    // Header lives *outside* the diff fence — putting a `//` line inside
-    // would muddy the diff syntax (line doesn't start with +, -, or space,
-    // so renderers treat it as plain context which is misleading).
-    const ref = diffSelection.commit
-      ? `${diffSelection.file}#${String(diffSelection.commit).slice(0, 7)}`
-      : diffSelection.file;
-    const lineRange = `L${diffSelection.startLine}-${diffSelection.endLine}`;
-    const quoted = [
-      `> 引自 ${ref} ${lineRange}：`,
-      '```diff',
-      diffSelection.text.replace(/\s+$/, ''),
-      '```'
-    ].join('\n');
+    // Header lives *outside* the diff fence — a `//` line inside would read
+    // as diff context.
+    const quoted = formatDiffQuote(diffSelection);
     onInsertIntoComposer(quoted);
   }, [diffSelection, onInsertIntoComposer]);
 
@@ -313,6 +352,12 @@ export function GitPanel({ project, onClose, onInsertIntoComposer, onSelectSessi
           <strong>{project?.name || '项目'}</strong>
         </div>
         <div className="header-actions">
+          {reviewComments.length && onInsertIntoComposer ? (
+            <button type="button" className="ghost-btn review-send" onClick={sendReview} title="把全部批注整理成一条消息放进输入框">
+              <Send size={16} />
+              <span>发送批注 {reviewComments.length}</span>
+            </button>
+          ) : null}
           <button
             type="button"
             className="ghost-btn"
@@ -549,6 +594,16 @@ export function GitPanel({ project, onClose, onInsertIntoComposer, onSelectSessi
                     <button
                       type="button"
                       className="ghost-btn small"
+                      onClick={() => setCommentDraft('')}
+                      disabled={!diffSelection || !diffSelection.text}
+                      title={diffSelection?.text ? '给所选行写批注' : '先点选或选中差异里的行'}
+                    >
+                      <MessageSquarePlus size={14} />
+                      <span>批注</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost-btn small"
                       onClick={insertSelection}
                       disabled={!diffSelection || !diffSelection.text}
                       title={diffSelection?.text ? '把所选行作为引用插入对话' : '先在差异里选中文本'}
@@ -605,11 +660,44 @@ export function GitPanel({ project, onClose, onInsertIntoComposer, onSelectSessi
                   currentAgent={currentAgent}
                   onSelectionChange={setDiffSelection}
                   onSelectSession={onSelectSession ? setPreviewSession : undefined}
+                  comments={reviewComments.filter(
+                    (comment) => comment.file === diffFile.file && (comment.commit || null) === (diffFile.commit || null)
+                  )}
+                  onDeleteComment={deleteComment}
+                  selectionResetKey={selectionResetKey}
                 />
               ) : (
                 <div className="files-empty">无差异内容</div>
               )}
             </div>
+            {commentDraft !== null && diffSelection?.text ? (
+              <div className="review-compose">
+                <div className="review-compose-target">
+                  批注 {diffSelection.file} {diffSelection.rangeLabel}
+                </div>
+                <textarea
+                  value={commentDraft}
+                  onChange={(event) => setCommentDraft(event.target.value)}
+                  placeholder="这几行要怎么改？"
+                  rows={3}
+                  autoFocus
+                />
+                <div className="review-compose-actions">
+                  <button type="button" className="ghost-btn small" onClick={() => setCommentDraft(null)}>取消</button>
+                  <button type="button" className="primary-btn accent" onClick={saveComment} disabled={!commentDraft.trim()}>
+                    保存批注
+                  </button>
+                </div>
+              </div>
+            ) : reviewComments.length && onInsertIntoComposer ? (
+              <div className="review-footer">
+                <span>已有 {reviewComments.length} 条批注</span>
+                <button type="button" className="primary-btn accent" onClick={sendReview}>
+                  <Send size={14} />
+                  <span>发送批注</span>
+                </button>
+              </div>
+            ) : null}
           </div>
         </div>
       )}
