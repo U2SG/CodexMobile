@@ -1,20 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronRight, MessageSquare } from 'lucide-react';
+import { ChevronRight, MessageSquare, X } from 'lucide-react';
 
 import { apiFetch } from './api.js';
-
-// Map a diff line's first character to a CSS class. Kept here so the viewer
-// is self-contained — same logic the old inline DiffView in git-panel.jsx
-// used, just split out so callers can render a richer header (breadcrumb,
-// commit chip, action buttons) without duplicating the body markup.
-function classifyDiffLine(line) {
-  if (line.startsWith('+++') || line.startsWith('---')) return 'meta';
-  if (line.startsWith('@@')) return 'hunk';
-  if (line.startsWith('diff ') || line.startsWith('index ')) return 'meta';
-  if (line.startsWith('+')) return 'add';
-  if (line.startsWith('-')) return 'del';
-  return 'ctx';
-}
+import { annotateDiffLines, describeDiffRange } from './git-diff-lines.js';
 
 function splitPath(filePath) {
   if (!filePath) return [];
@@ -53,13 +41,68 @@ export function GitDiffViewer({
   currentAgent = null,
   onPathClick,
   onSelectionChange,
-  onSelectSession
+  onSelectSession,
+  // Saved review comments for this file/commit: [{ id, endIndex, body }].
+  comments = [],
+  onDeleteComment,
+  // Bumped by the parent to drop the current selection (e.g. after saving
+  // a comment on it).
+  selectionResetKey = 0
 }) {
   const bodyRef = useRef(null);
   const [selection, setSelection] = useState(null);
   const [relatedSessions, setRelatedSessions] = useState([]);
   const segments = useMemo(() => splitPath(file), [file]);
   const lines = useMemo(() => (diff || '').split('\n'), [diff]);
+  const annotated = useMemo(() => annotateDiffLines(lines), [lines]);
+  // Tap-to-select: a phone cannot drag a precise text selection inside a
+  // <pre>, so tapping one row selects it and tapping a second extends.
+  const [tapRange, setTapRange] = useState(null); // { start, end } diff row indices
+  const tapRangeRef = useRef(null);
+  tapRangeRef.current = tapRange;
+  const selectionRef = useRef(null);
+  selectionRef.current = selection;
+
+  const reportRange = useCallback((start, end, text) => {
+    const startIndex = Math.min(start, end);
+    const endIndex = Math.max(start, end);
+    const next = {
+      file,
+      commit,
+      startIndex,
+      endIndex,
+      rangeLabel: describeDiffRange(annotated, startIndex, endIndex),
+      text: text ?? lines.slice(startIndex, endIndex + 1).join('\n')
+    };
+    setSelection(next);
+    onSelectionChange?.(next);
+  }, [annotated, commit, file, lines, onSelectionChange]);
+
+  const clearSelection = useCallback(() => {
+    setTapRange(null);
+    setSelection(null);
+    onSelectionChange?.(null);
+  }, [onSelectionChange]);
+
+  useEffect(() => {
+    setTapRange(null);
+    setSelection(null);
+  }, [selectionResetKey, file, commit]);
+
+  const handleLineTap = useCallback((index) => {
+    const sel = typeof window !== 'undefined' ? window.getSelection?.() : null;
+    if (sel && !sel.isCollapsed) return; // a text selection is in progress
+    const current = tapRangeRef.current;
+    if (current && current.start === current.end && current.start === index) {
+      clearSelection();
+      return;
+    }
+    const next = current && current.start === current.end
+      ? { start: Math.min(current.start, index), end: Math.max(current.start, index) }
+      : { start: index, end: index };
+    setTapRange(next);
+    reportRange(next.start, next.end);
+  }, [clearSelection, reportRange]);
 
   // Fetch "recent sessions that touched this file" so we can render
   // attribution badges in the breadcrumb row. apply_patch-only signal —
@@ -86,44 +129,32 @@ export function GitDiffViewer({
     };
   }, [projectId, file]);
 
-  // Watch for user text selection inside the diff body and report
-  // {file, commit, startLine, endLine, text}. The check runs on every
-  // selectionchange but bails fast when the selection is empty or
-  // outside our body, so it's cheap to leave attached.
+  // Watch for user text selection inside the diff body and report it as a
+  // diff row range. Runs on every selectionchange but bails fast when the
+  // selection is empty or outside our body. A collapsed selection only
+  // clears when no tapped range is active (a tap collapses the selection).
   useEffect(() => {
     if (typeof document === 'undefined') return undefined;
     const handler = () => {
       const sel = typeof window !== 'undefined' ? window.getSelection?.() : null;
-      if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
-        if (selection) setSelection(null);
-        return;
-      }
-      const range = sel.getRangeAt(0);
       const body = bodyRef.current;
-      if (!body || !body.contains(range.startContainer) || !body.contains(range.endContainer)) {
-        if (selection) setSelection(null);
-        return;
-      }
-      const startIdx = findLineIndex(range.startContainer, bodyRef);
-      const endIdx = findLineIndex(range.endContainer, bodyRef);
+      const range = sel && !sel.isCollapsed && sel.rangeCount ? sel.getRangeAt(0) : null;
+      const inside = range && body && body.contains(range.startContainer) && body.contains(range.endContainer);
+      const startIdx = inside ? findLineIndex(range.startContainer, bodyRef) : -1;
+      const endIdx = inside ? findLineIndex(range.endContainer, bodyRef) : -1;
       if (startIdx < 0 || endIdx < 0) {
-        if (selection) setSelection(null);
+        if (!tapRangeRef.current && selectionRef.current) {
+          setSelection(null);
+          onSelectionChange?.(null);
+        }
         return;
       }
-      const startLine = Math.min(startIdx, endIdx) + 1; // 1-based
-      const endLine = Math.max(startIdx, endIdx) + 1;
-      const text = sel.toString();
-      const next = { file, commit, startLine, endLine, text };
-      setSelection(next);
-      onSelectionChange?.(next);
+      setTapRange(null);
+      reportRange(startIdx, endIdx, sel.toString());
     };
     document.addEventListener('selectionchange', handler);
     return () => document.removeEventListener('selectionchange', handler);
-    // We deliberately don't include `selection` in the dep array — the
-    // handler reads it via closure on every event and we only want one
-    // listener installed for the viewer's lifetime.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [file, commit, onSelectionChange]);
+  }, [onSelectionChange, reportRange]);
 
   const handleSegmentClick = useCallback(
     (idx) => {
@@ -232,16 +263,34 @@ export function GitDiffViewer({
       )}
 
       <pre ref={bodyRef} className="git-diff-body diff-view" data-selection-host>
-        {lines.map((line, idx) => (
-          <span
-            key={idx}
-            data-line-index={idx}
-            className={`diff-line ${classifyDiffLine(line)}`}
-          >
-            {line || ' '}
-            {'\n'}
-          </span>
-        ))}
+        {lines.map((line, idx) => {
+          const selected = selection && idx >= selection.startIndex && idx <= selection.endIndex;
+          const lineComments = comments.filter((comment) => comment.endIndex === idx);
+          return (
+            <span key={idx}>
+              <span
+                data-line-index={idx}
+                className={`diff-line ${annotated[idx]?.kind || 'ctx'}${selected ? ' is-selected' : ''}`}
+                onClick={() => handleLineTap(idx)}
+              >
+                {line || ' '}
+                {'\n'}
+              </span>
+              {lineComments.map((comment) => (
+                <span key={comment.id} className="diff-comment" data-comment-id={comment.id}>
+                  <MessageSquare size={12} aria-hidden="true" />
+                  <span className="diff-comment-body">{comment.body}</span>
+                  {onDeleteComment ? (
+                    <button type="button" className="diff-comment-delete" onClick={() => onDeleteComment(comment.id)} aria-label="删除批注">
+                      <X size={12} />
+                    </button>
+                  ) : null}
+                  {'\n'}
+                </span>
+              ))}
+            </span>
+          );
+        })}
       </pre>
     </div>
   );
