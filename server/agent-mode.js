@@ -6,21 +6,33 @@ export function isClaudeMode() {
   return AGENT_MODE === 'claude' || AGENT_MODE === 'claude-code';
 }
 
+export function isAgyMode() {
+  return AGENT_MODE === 'agy' || AGENT_MODE === 'antigravity';
+}
+
 export function agentLabel() {
-  return isClaudeMode() ? 'Claude Code' : 'Codex';
+  if (isClaudeMode()) return 'Claude Code';
+  if (isAgyMode()) return 'AGY';
+  return 'Codex';
 }
 
 export function defaultProvider() {
-  return isClaudeMode() ? 'claude' : 'codex';
+  if (isClaudeMode()) return 'claude';
+  if (isAgyMode()) return 'agy';
+  return 'codex';
 }
 
 export function defaultModel() {
   // Bare alias, not a pinned `claude-sonnet-*` id: this value round-trips
   // through the client back into resolveClaudeModel, so the CLI keeps following
   // the latest release in that family.
-  return isClaudeMode() ? 'sonnet' : 'gpt-5.5';
+  if (isClaudeMode()) return 'sonnet';
+  if (isAgyMode()) return 'gemini-4-neon-high';
+  return 'gpt-5.5';
 }
 
 export function defaultModelShort() {
-  return isClaudeMode() ? 'Sonnet' : '5.5 中';
+  if (isClaudeMode()) return 'Sonnet';
+  if (isAgyMode()) return 'G4 Neon';
+  return '5.5 中';
 }

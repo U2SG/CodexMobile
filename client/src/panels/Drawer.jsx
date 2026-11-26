@@ -31,7 +31,7 @@ import {
   X
 } from 'lucide-react';
 import { apiFetch } from '../api.js';
-import { agentMeta, isClaudeProvider } from '../agent-meta.js';
+import { agentMeta, isAgyProvider, isClaudeProvider, sessionSourceBadge } from '../agent-meta.js';
 import { CopyResumeButton } from '../chat/CopyResumeButton.jsx';
 import { formatTime } from '../format-time.js';
 import { compactPath } from '../utils/path.js';
@@ -217,9 +217,14 @@ function renderProjectGroup({
                     {session.title || '对话'}
                   </span>
                   <small>
-                    <span className={`thread-source ${isClaudeProvider(session.provider) ? 'is-claude' : 'is-codex'}`}>
-                      {isClaudeProvider(session.provider) ? 'Claude' : session.provider ? 'Codex' : agent.shortLabel}
-                    </span>
+                    {(() => {
+                      const badge = sessionSourceBadge(session.provider, agent.shortLabel);
+                      return (
+                        <span className={`thread-source ${badge.className}`}>
+                          {badge.label}
+                        </span>
+                      );
+                    })()}
                     {session.draft ? '待发送' : formatTime(session.updatedAt)}
                   </small>
                 </button>
@@ -235,8 +240,11 @@ function renderProjectGroup({
                       {session.pinned ? <PinOff size={14} /> : <Pin size={14} />}
                     </button>
                   ) : null}
-                  {!session.draft && isClaudeProvider(session.provider) ? (
-                    <CopyResumeButton sessionId={session.id} />
+                  {!session.draft && (isClaudeProvider(session.provider) || isAgyProvider(session.provider)) ? (
+                    <CopyResumeButton
+                      sessionId={session.id}
+                      title={isAgyProvider(session.provider) ? '复制 conversation id（终端用 agy --resume <id> 恢复）' : undefined}
+                    />
                   ) : null}
                   <button
                     type="button"
@@ -511,7 +519,7 @@ function SessionSearch({ peers, currentAgent, onClose, onSelectSession, onSelect
                   >
                     <div className="drawer-search-meta">
                       {r.agent ? (
-                        <span className={`thread-source is-${r.agent}`}>{r.agent === 'claude' ? 'Claude' : 'Codex'}</span>
+                        <span className={`thread-source is-${r.agent}`}>{r.agent === 'claude' ? 'Claude' : r.agent === 'agy' ? 'AGY' : 'Codex'}</span>
                       ) : null}
                       {projectLabel ? (
                         <span className="drawer-search-project" title={r.cwd || ''}>{projectLabel}</span>

@@ -19,7 +19,7 @@ import {
   PinOff,
   Trash2
 } from 'lucide-react';
-import { isClaudeProvider } from '../agent-meta.js';
+import { isAgyProvider, isClaudeProvider, sessionSourceBadge } from '../agent-meta.js';
 import { CopyResumeButton } from '../chat/CopyResumeButton.jsx';
 import { formatTime } from '../format-time.js';
 
@@ -97,15 +97,23 @@ export function PinnedSection({
           {session.title || '对话'}
         </span>
         <small>
-          <span className={`thread-source ${isClaudeProvider(session.provider) ? 'is-claude' : 'is-codex'}`}>
-            {isClaudeProvider(session.provider) ? 'Claude' : session.provider ? 'Codex' : agent.shortLabel}
-          </span>
+          {(() => {
+            const badge = sessionSourceBadge(session.provider, agent.shortLabel);
+            return (
+              <span className={`thread-source ${badge.className}`}>
+                {badge.label}
+              </span>
+            );
+          })()}
           {project.name} · {formatTime(session.updatedAt)}
         </small>
       </button>
       <div className="thread-actions">
-        {isClaudeProvider(session.provider) ? (
-          <CopyResumeButton sessionId={session.id} />
+        {isClaudeProvider(session.provider) || isAgyProvider(session.provider) ? (
+          <CopyResumeButton
+            sessionId={session.id}
+            title={isAgyProvider(session.provider) ? '复制 conversation id（终端用 agy --resume <id> 恢复）' : undefined}
+          />
         ) : null}
         <button
           type="button"

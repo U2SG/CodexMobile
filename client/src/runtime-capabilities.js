@@ -1,6 +1,7 @@
 export function normalizeAgentId(value = '') {
   const id = String(value || '').trim().toLowerCase();
   if (id === 'claude' || id === 'claude-code') return 'claude';
+  if (id === 'agy' || id === 'antigravity') return 'agy';
   if (id === 'codex' || id === 'openai' || id === 'cliproxyapi') return 'codex';
   return 'unknown';
 }
@@ -47,9 +48,10 @@ export function runtimeCapabilities({
   const codexDesktopIpc = agent === 'codex' && bridge.connected && bridge.mode === 'desktop-ipc';
   const codexHeadless = agent === 'codex' && bridge.connected && bridge.mode === 'headless-local';
   const claudeCli = agent === 'claude';
+  const agyCli = agent === 'agy';
   const effectiveSessionId = sessionId || selectedSessionId;
   const hasRealSession = Boolean(effectiveSessionId && !sessionIsDraft);
-  const canCreateThread = agent === 'claude' || desktopBridgeCanCreateThread(bridge);
+  const canCreateThread = agent === 'claude' || agent === 'agy' || desktopBridgeCanCreateThread(bridge);
   const canSteer = Boolean(
     codexDesktopIpc &&
     running &&
@@ -63,7 +65,8 @@ export function runtimeCapabilities({
       codexDesktopIpc ? 'codex-desktop-ipc' :
         codexHeadless ? 'codex-headless' :
           claudeCli ? 'claude-cli' :
-            'unknown',
+            agyCli ? 'agy-cli' :
+              'unknown',
     canStart: canCreateThread,
     canResume: hasRealSession,
     canQueue: true,

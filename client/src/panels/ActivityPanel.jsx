@@ -144,7 +144,7 @@ export function ActivityPanel({ onClose }) {
                     <div className="activity-panel-day-agents">
                       {Object.entries(day.byAgent).map(([agentKey, slot]) => (
                         <span key={agentKey} className={`thread-source is-${agentKey}`}>
-                          {agentKey === 'claude' ? 'Claude' : 'Codex'} {slot.sessions}/{slot.files}
+                          {agentKey === 'claude' ? 'Claude' : agentKey === 'agy' ? 'AGY' : 'Codex'} {slot.sessions}/{slot.files}
                         </span>
                       ))}
                     </div>

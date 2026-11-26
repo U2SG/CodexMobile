@@ -32,7 +32,7 @@ import {
 } from './codex-data.js';
 import { getCodexQuota, switchCodexAccount } from './codex-quota.js';
 import { abortCodexTurn, getActiveRuns as getCodexActiveRuns, runCodexTurn, terminateAllRunProcesses } from './codex-runner.js';
-import { defaultProvider, defaultModel, defaultModelShort, isClaudeMode } from './agent-mode.js';
+import { defaultProvider, defaultModel, defaultModelShort, isAgyMode, isClaudeMode } from './agent-mode.js';
 import { liveEnv } from './env-file.js';
 import { agentCapabilities, currentAgentMatchesSession } from './agent-capabilities.js';
 import { createFileRouteHandler } from './file-routes.js';
@@ -190,8 +190,8 @@ const runtimePrefs = createRuntimePrefs({
     ipcTurnsEnabled: process.env.CODEXMOBILE_USE_IPC_TURNS === '1'
   },
   rejectKey: (key, value) => {
-    if (key === 'ipcTurnsEnabled' && Boolean(value) && isClaudeMode()) {
-      return 'Claude 模式不支持桌面端 Codex IPC';
+    if (key === 'ipcTurnsEnabled' && Boolean(value) && (isClaudeMode() || isAgyMode())) {
+      return isAgyMode() ? 'AGY 模式不支持桌面端 Codex IPC' : 'Claude 模式不支持桌面端 Codex IPC';
     }
     return null;
   }
@@ -490,12 +490,12 @@ chatService = createChatService({
   getSession,
   getCacheSnapshot,
   getDesktopBridgeStatus: async (options) => {
-    if (isClaudeMode()) {
+    if (isClaudeMode() || isAgyMode()) {
       return {
         strict: false,
         connected: true,
         mode: 'headless-local',
-        reason: 'Claude 模式不使用桌面端 Codex IPC',
+        reason: isAgyMode() ? 'AGY 模式不使用桌面端 Codex IPC' : 'Claude 模式不使用桌面端 Codex IPC',
         capabilities: { read: true, createThread: true, sendToOpenDesktopThread: false }
       };
     }
@@ -693,8 +693,9 @@ function notifyPush(payload) {
   });
   const notification = ntfyNotify && notificationFromServerPayload({ ...payload, detail });
   if (notification) {
-    // Both agents publish to one topic; the suffix says which service it was.
-    ntfyNotify({ ...notification, title: `${notification.title} · ${isClaudeMode() ? 'Claude' : 'Codex'}` })
+    // All agents publish to one topic; the suffix says which service it was.
+    const suffix = isClaudeMode() ? 'Claude' : isAgyMode() ? 'AGY' : 'Codex';
+    ntfyNotify({ ...notification, title: `${notification.title} · ${suffix}` })
       .catch((error) => console.warn('[ntfy] notify failed:', error?.message || error));
   }
 }

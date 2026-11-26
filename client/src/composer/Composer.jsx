@@ -29,7 +29,7 @@ import {
   X
 } from 'lucide-react';
 import { apiFetch, getToken } from '../api.js';
-import { agentMeta, isClaudeProvider } from '../agent-meta.js';
+import { agentMeta, isAgyProvider, isClaudeProvider } from '../agent-meta.js';
 import { canGuideCurrentTask as canGuideCurrentTaskForSend } from '../runtime-capabilities.js';
 import {
   SLASH_COMMANDS,
@@ -436,7 +436,7 @@ export function Composer({
     ? models
     : (effectiveModel ? [{ value: effectiveModel, label: effectiveModel }] : []);
   const selectedModelLabel = modelList.find((model) => model.value === effectiveModel)?.label || effectiveModel;
-  const selectedPermissionLabel = isClaudeProvider(status) && permissionMode === 'default'
+  const selectedPermissionLabel = (isClaudeProvider(status) || isAgyProvider(status)) && permissionMode === 'default'
     ? '自动接受编辑'
     : permissionLabel(permissionMode);
   const runtimeSummary = `${agent.shortLabel} · ${shortModelName(selectedModelLabel)} ${reasoningLabel(selectedReasoningEffort)} · ${selectedPermissionLabel}`;
@@ -742,7 +742,7 @@ export function Composer({
       ) : null}
       {openMenu === 'permission' ? (
         <div className="composer-menu permission-menu">
-          {PERMISSION_OPTIONS.filter((option) => !isClaudeProvider(status) || option.value !== 'default').map((option) => (
+          {PERMISSION_OPTIONS.filter((option) => !(isClaudeProvider(status) || isAgyProvider(status)) || option.value !== 'default').map((option) => (
             <button
               key={option.value}
               type="button"

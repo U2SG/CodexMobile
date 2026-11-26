@@ -9,7 +9,8 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { CODEX_SESSION_INDEX, CODEX_SESSIONS_DIR, CODEX_STATE_DB_PATH, readCodexConfig, readCodexWorkspaceState } from './codex-config.js';
 import { CLAUDE_PROJECTS_DIR, readClaudeConfig } from './claude-config.js';
-import { isClaudeMode } from './agent-mode.js';
+import { agyTranscriptPath, extractAgyUserText, queryAgyConversationSummaries, readAgyConfig } from './agy-config.js';
+import { defaultProvider, isAgyMode, isClaudeMode } from './agent-mode.js';
 import { currentAgentMatchesSession, sessionAgentId } from './agent-capabilities.js';
 import {
   extractProposedPlanContent,
@@ -790,7 +791,7 @@ let sessionFactsCacheDirty = false;
 function sessionFactsCachePath() {
   return (
     process.env.CODEXMOBILE_SESSION_FACTS_CACHE ||
-    path.join(STATE_DIR, `session-facts-${isClaudeMode() ? 'claude' : 'codex'}.json`)
+    path.join(STATE_DIR, `session-facts-${defaultProvider()}.json`)
   );
 }
 
@@ -1001,10 +1002,15 @@ export function refreshCodexCache() {
 
 async function refreshCodexCacheNow() {
   const claudeMode = isClaudeMode();
-  const config = claudeMode ? await readClaudeConfig() : await readCodexConfig();
-  const workspaceState = claudeMode ? { projects: [] } : await readCodexWorkspaceState();
-  // Codex-only: Claude sessions never consult the thread name index.
-  const sessionIndex = claudeMode ? new Map() : await readSessionNameIndex();
+  const agyMode = isAgyMode();
+  const config = agyMode
+    ? await readAgyConfig()
+    : claudeMode
+      ? await readClaudeConfig()
+      : await readCodexConfig();
+  const workspaceState = (claudeMode || agyMode) ? { projects: [] } : await readCodexWorkspaceState();
+  // Codex-only: Claude and AGY sessions never consult the Codex thread name index.
+  const sessionIndex = (claudeMode || agyMode) ? new Map() : await readSessionNameIndex();
   const mobileSessionIndex = await readMobileSessionIndex();
   const mobileSessions = await readMobileSessions();
   const hiddenProjectIds = await readHiddenProjectIds();
@@ -1026,47 +1032,94 @@ async function refreshCodexCacheNow() {
     }
   }
 
-  await loadSessionFactsCache();
-  const files = await walkJsonlFiles(claudeMode ? CLAUDE_PROJECTS_DIR : CODEX_SESSIONS_DIR);
   const worktreeRootCache = new Map();
-  for (const file of files) {
-    const facts = await readSessionFacts(file, claudeMode ? readClaudeSessionFacts : readCodexSessionFacts);
-    const session = claudeMode
-      ? claudeSessionFromFacts(facts, file, mobileSessionIndex, worktreeRootCache)
-      : codexSessionFromFacts(facts, file, sessionIndex, mobileSessionIndex, worktreeRootCache);
-    if (!session) {
-      continue;
-    }
-    if (hiddenSessionIds.has(session.id)) {
-      continue;
-    }
-    if (hiddenProjectIds.has(session.projectId)) {
-      continue;
-    }
-    if (!visibleProjectIds.has(session.projectId) && session.cwd) {
-      const entry = upsertProject(projectById, session.groupRoot || session.cwd, 'trusted', null);
-      if (entry) {
-        visibleProjectIds.add(entry.id);
+  if (agyMode) {
+    const summaries = await queryAgyConversationSummaries();
+    for (const row of summaries) {
+      if (!row?.id || !row.cwd) {
+        continue;
       }
+      if (hiddenSessionIds.has(row.id)) {
+        continue;
+      }
+      const groupRoot = resolveProjectRoot(row.cwd, worktreeRootCache);
+      const projectId = projectIdFor(groupRoot);
+      if (hiddenProjectIds.has(projectId)) {
+        continue;
+      }
+      if (!visibleProjectIds.has(projectId)) {
+        const entry = upsertProject(projectById, groupRoot, 'trusted', null);
+        if (entry) {
+          visibleProjectIds.add(entry.id);
+        }
+      }
+      const project = projectById.get(projectId);
+      if (!project) {
+        continue;
+      }
+      const mobileSession = mobileSessionIndex.get(row.id) || null;
+      const mobileMessages = Array.isArray(mobileSession?.messages) ? mobileSession.messages : [];
+      const transcriptPath = agyTranscriptPath(row.id);
+      const hasTranscript = transcriptPath ? fsSync.existsSync(transcriptPath) : false;
+      const session = {
+        id: row.id,
+        cwd: path.resolve(row.cwd),
+        groupRoot,
+        projectId,
+        title: mobileSession?.title || row.title || (row.preview ? row.preview.slice(0, 52) : '新对话'),
+        titleLocked: Boolean(mobileSession?.titleLocked),
+        summary: mobileSession?.summary || row.preview || row.title || 'AGY 会话',
+        model: mobileSession?.model || config.model || null,
+        provider: 'agy',
+        messageCount: Math.max(row.stepCount || 0, mobileMessages.length),
+        updatedAt: latestIso(row.updatedAt, mobileSession?.updatedAt),
+        source: 'agy',
+        filePath: hasTranscript ? transcriptPath : null
+      };
+      upsertLatestSession(session, sessionsByProject, sessionById, project);
     }
-    if (!visibleProjectIds.has(session.projectId)) {
-      continue;
+  } else {
+    await loadSessionFactsCache();
+    const files = await walkJsonlFiles(claudeMode ? CLAUDE_PROJECTS_DIR : CODEX_SESSIONS_DIR);
+    for (const file of files) {
+      const facts = await readSessionFacts(file, claudeMode ? readClaudeSessionFacts : readCodexSessionFacts);
+      const session = claudeMode
+        ? claudeSessionFromFacts(facts, file, mobileSessionIndex, worktreeRootCache)
+        : codexSessionFromFacts(facts, file, sessionIndex, mobileSessionIndex, worktreeRootCache);
+      if (!session) {
+        continue;
+      }
+      if (hiddenSessionIds.has(session.id)) {
+        continue;
+      }
+      if (hiddenProjectIds.has(session.projectId)) {
+        continue;
+      }
+      if (!visibleProjectIds.has(session.projectId) && session.cwd) {
+        const entry = upsertProject(projectById, session.groupRoot || session.cwd, 'trusted', null);
+        if (entry) {
+          visibleProjectIds.add(entry.id);
+        }
+      }
+      if (!visibleProjectIds.has(session.projectId)) {
+        continue;
+      }
+      const project = projectById.get(session.projectId);
+      if (!project) {
+        continue;
+      }
+      // Dedup: a resumed rollout file writes its parent session's id in a later
+      // session_meta entry, so parseSessionMetadata returns that parent id even
+      // though the file is physically separate. Without this dedup the same id
+      // would land in sessionsByProject twice (count mismatch with the visible
+      // list) while sessionById would silently overwrite to the last one parsed.
+      // Keep the entry with the latest updatedAt — the resume file contains the
+      // newer increments and its filePath is the right one to read from later.
+      upsertLatestSession(session, sessionsByProject, sessionById, project);
     }
-    const project = projectById.get(session.projectId);
-    if (!project) {
-      continue;
-    }
-    // Dedup: a resumed rollout file writes its parent session's id in a later
-    // session_meta entry, so parseSessionMetadata returns that parent id even
-    // though the file is physically separate. Without this dedup the same id
-    // would land in sessionsByProject twice (count mismatch with the visible
-    // list) while sessionById would silently overwrite to the last one parsed.
-    // Keep the entry with the latest updatedAt — the resume file contains the
-    // newer increments and its filePath is the right one to read from later.
-    upsertLatestSession(session, sessionsByProject, sessionById, project);
+    pruneSessionFactsCache(new Set(files));
+    await saveSessionFactsCache();
   }
-  pruneSessionFactsCache(new Set(files));
-  await saveSessionFactsCache();
 
   const stalePhantomIds = [];
   for (const mobileSession of mobileSessions) {
@@ -1263,7 +1316,7 @@ export async function renameSession(sessionId, projectId, title) {
     throw error;
   }
 
-  if (session.filePath) {
+  if (session.filePath && !isAgyMode()) {
     await renameSessionNameIndexRow(session.id, nextTitle, session.updatedAt);
   }
   await renameMobileSession({
@@ -1309,6 +1362,10 @@ async function findSessionFile(sessionId) {
   const cached = cache.sessionById.get(sessionId)?.filePath;
   if (cached) {
     return cached;
+  }
+  if (isAgyMode()) {
+    const candidate = agyTranscriptPath(sessionId);
+    return candidate && fsSync.existsSync(candidate) ? candidate : null;
   }
   const files = await walkJsonlFiles(isClaudeMode() ? CLAUDE_PROJECTS_DIR : CODEX_SESSIONS_DIR);
   return files.find((file) => path.basename(file).includes(sessionId)) || null;
@@ -1371,7 +1428,33 @@ function pushLegacyAssistantContent(state, baseId, content, timestamp, role = 'a
 
 function applyLegacySessionEntry(state, entry) {
   const { messages } = state;
-  const timestamp = entry.timestamp || null;
+  const timestamp = entry.timestamp || entry.created_at || null;
+
+  if (isAgyMode()) {
+    if (entry.type === 'USER_INPUT' && entry.source === 'USER_EXPLICIT') {
+      const text = sanitizeVisibleUserMessage(extractAgyUserText(entry.content));
+      if (text.trim()) {
+        const userId = `agy-${entry.step_index ?? messages.length}-user`;
+        state.currentTurnId = `turn-${entry.step_index ?? ++state.synthTurnCounter}`;
+        const userMessage = {
+          id: userId,
+          role: 'user',
+          content: text,
+          timestamp,
+          turnId: state.currentTurnId
+        };
+        state.parsedUserMessages.add(userMessage);
+        messages.push(userMessage);
+      }
+      return;
+    }
+
+    if (entry.type === 'PLANNER_RESPONSE' && typeof entry.content === 'string' && entry.content.trim()) {
+      const baseId = `agy-${entry.step_index ?? messages.length}-assistant`;
+      pushLegacyAssistantContent(state, baseId, entry.content.trim(), timestamp);
+    }
+    return;
+  }
 
   if (isClaudeMode()) {
     if (isVisibleClaudeUserMessage(entry)) {
@@ -1507,7 +1590,7 @@ export async function readSessionMessages(
   sessionId,
   { limit = 120, offset = null, latest = true, includeActivity = false } = {}
 ) {
-  if (isClaudeMode()) {
+  if (isClaudeMode() || isAgyMode()) {
     return readLegacySessionMessages(sessionId, { limit, offset, latest });
   }
 
