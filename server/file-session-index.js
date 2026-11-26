@@ -67,6 +67,21 @@ function parsePatchOps(input) {
   return ops;
 }
 
+function forEachLine(text, visitor) {
+  const source = String(text || '');
+  const len = source.length;
+  let start = 0;
+  while (start < len) {
+    let end = source.indexOf('\n', start);
+    if (end === -1) end = len;
+    const lineEnd = end > start && source.charCodeAt(end - 1) === 13 ? end - 1 : end;
+    if (lineEnd > start) {
+      visitor(source.slice(start, lineEnd));
+    }
+    start = end + 1;
+  }
+}
+
 export function parseCodexRolloutForFileTouches(text) {
   // Single-pass parse: pull session_meta (id, cwd) and any apply_patch ops.
   // Tolerant of partial / corrupted lines — broken JSON is skipped.
@@ -74,31 +89,33 @@ export function parseCodexRolloutForFileTouches(text) {
   let cwd = null;
   let sessionTimestamp = null;
   const touches = [];
-  for (const rawLine of String(text || '').split(/\r?\n/)) {
-    if (!rawLine) continue;
+  forEachLine(text, (rawLine) => {
+    const mightBeMeta = rawLine.indexOf('session_meta') !== -1;
+    const mightBePatch = rawLine.indexOf('apply_patch') !== -1;
+    if (!mightBeMeta && !mightBePatch) return;
     let entry;
     try {
       entry = JSON.parse(rawLine);
     } catch {
-      continue;
+      return;
     }
-    if (!entry || typeof entry !== 'object') continue;
+    if (!entry || typeof entry !== 'object') return;
     const payload = entry.payload;
-    if (!payload || typeof payload !== 'object') continue;
+    if (!payload || typeof payload !== 'object') return;
     if (entry.type === 'session_meta') {
       sessionId = payload.id || sessionId;
       cwd = payload.cwd || cwd;
       sessionTimestamp = entry.timestamp || sessionTimestamp;
-      continue;
+      return;
     }
-    if (entry.type !== 'response_item') continue;
-    if (payload.type !== 'custom_tool_call') continue;
-    if (payload.name !== 'apply_patch') continue;
+    if (entry.type !== 'response_item') return;
+    if (payload.type !== 'custom_tool_call') return;
+    if (payload.name !== 'apply_patch') return;
     const tsMs = Date.parse(entry.timestamp || '') || null;
     for (const { op, relPath } of parsePatchOps(payload.input || '')) {
       touches.push({ op, relPath, touchedAt: tsMs });
     }
-  }
+  });
   return { sessionId, cwd, sessionTimestamp, touches };
 }
 
@@ -128,21 +145,23 @@ export function parseClaudeRolloutForFileTouches(text) {
   let cwd = null;
   let sessionTimestamp = null;
   const touches = [];
-  for (const rawLine of String(text || '').split(/\r?\n/)) {
-    if (!rawLine) continue;
+  forEachLine(text, (rawLine) => {
+    const needMeta = !sessionId || !cwd || !sessionTimestamp;
+    const mightBeToolUse = rawLine.indexOf('"tool_use"') !== -1;
+    if (!needMeta && !mightBeToolUse) return;
     let entry;
     try {
       entry = JSON.parse(rawLine);
     } catch {
-      continue;
+      return;
     }
-    if (!entry || typeof entry !== 'object') continue;
+    if (!entry || typeof entry !== 'object') return;
     if (typeof entry.sessionId === 'string' && !sessionId) sessionId = entry.sessionId;
     if (typeof entry.cwd === 'string' && !cwd) cwd = entry.cwd;
     if (typeof entry.timestamp === 'string' && !sessionTimestamp) sessionTimestamp = entry.timestamp;
-    if (entry.type !== 'assistant') continue;
+    if (entry.type !== 'assistant') return;
     const content = entry.message?.content;
-    if (!Array.isArray(content)) continue;
+    if (!Array.isArray(content)) return;
     const tsMs = Date.parse(entry.timestamp || '') || null;
     for (const item of content) {
       if (!item || item.type !== 'tool_use') continue;
@@ -151,7 +170,7 @@ export function parseClaudeRolloutForFileTouches(text) {
       if (typeof filePath !== 'string' || !filePath) continue;
       touches.push({ op: claudeOpFor(item.name), relPath: filePath, touchedAt: tsMs });
     }
-  }
+  });
   return { sessionId, cwd, sessionTimestamp, touches };
 }
 
@@ -199,30 +218,48 @@ export function createFileSessionIndex({
   // disk on first build via loadPersistence().
   let fileStates = null; // null = not loaded; otherwise Map<path, {mtimeMs, parsed|null}>
 
-  // Cap concurrent file reads. Sequential reads on the codex sessions
-  // tree were measured at ~14s for 389 rollouts on Windows + warm cache;
-  // a small parallel pool brings that under 2s. Cap so we don't blow the
-  // FD table on enormous corpora.
-  const READ_CONCURRENCY = 16;
+  // Cap concurrent file reads and parse each file immediately so raw rollout
+  // strings are released instead of accumulating in memory across a cold scan
+  // (holding 16+ large 50-150MB JSONL files simultaneously exhausts the 4GB V8 heap).
+  const READ_CONCURRENCY = 2;
 
-  async function readBatched(files) {
-    const results = [];
+  async function readAndParseFiles(files) {
     let cursor = 0;
+    let skippedNoPatch = 0;
     async function worker() {
       while (cursor < files.length) {
         const idx = cursor;
         cursor += 1;
         const file = files[idx];
+        let text = null;
         try {
-          results[idx] = await readRolloutFile(file);
+          text = await readRolloutFile(file.path);
         } catch {
-          results[idx] = null;
+          text = null;
         }
+        let parsed = null;
+        if (text != null) {
+          // Cheap pre-filter — most codex rollouts don't apply_patch at all
+          // and we can skip the per-line JSON.parse. Claude rollouts use
+          // tool_use envelopes; check that marker too. If neither is
+          // present, the file has no file-touch signal worth parsing.
+          const hasTouchMarker =
+            text.indexOf('apply_patch') !== -1 || text.indexOf('"tool_use"') !== -1;
+          if (hasTouchMarker) {
+            parsed = parseRolloutForFileTouches(text);
+            if (!parsed.sessionId || !parsed.cwd || !parsed.touches.length) {
+              parsed = null;
+            }
+          } else {
+            skippedNoPatch += 1;
+          }
+        }
+        fileStates.set(file.path, { mtimeMs: file.mtimeMs, parsed });
       }
     }
     const workers = Array.from({ length: Math.min(READ_CONCURRENCY, files.length) }, worker);
     await Promise.all(workers);
-    return results;
+    return skippedNoPatch;
   }
 
   async function hydrateFileStates() {
@@ -316,31 +353,8 @@ export function createFileSessionIndex({
         dropped += 1;
       }
     }
-    // Read + parse only the changed/new files.
-    const texts = await readBatched(filesToRead.map((f) => f.path));
-    let skippedNoPatch = 0;
-    for (let i = 0; i < filesToRead.length; i += 1) {
-      const file = filesToRead[i];
-      const text = texts[i];
-      let parsed = null;
-      if (text != null) {
-        // Cheap pre-filter — most codex rollouts don't apply_patch at all
-        // and we can skip the per-line JSON.parse. Claude rollouts use
-        // tool_use envelopes; check that marker too. If neither is
-        // present, the file has no file-touch signal worth parsing.
-        const hasTouchMarker =
-          text.indexOf('apply_patch') !== -1 || text.indexOf('"tool_use"') !== -1;
-        if (hasTouchMarker) {
-          parsed = parseRolloutForFileTouches(text);
-          if (!parsed.sessionId || !parsed.cwd || !parsed.touches.length) {
-            parsed = null;
-          }
-        } else {
-          skippedNoPatch += 1;
-        }
-      }
-      fileStates.set(file.path, { mtimeMs: file.mtimeMs, parsed });
-    }
+    // Read + parse only the changed/new files without retaining all raw texts at once.
+    const skippedNoPatch = await readAndParseFiles(filesToRead);
     const entries = aggregateEntries();
     const builtAt = Date.now();
     const elapsed = builtAt - t0;
