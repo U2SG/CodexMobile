@@ -143,6 +143,9 @@ export function defaultSkillRoots({ repoSkillsDir, agent = 'codex' } = {}) {
   if (normalized === 'claude' || normalized === 'claude-code') {
     return [{ path: path.join(os.homedir(), '.claude', 'skills'), source: 'claude' }];
   }
+  if (normalized === 'agy' || normalized === 'antigravity') {
+    return [{ path: path.join(os.homedir(), '.gemini', 'config', 'skills'), source: 'agy' }];
+  }
   const roots = [{ path: path.join(os.homedir(), '.codex', 'skills'), source: 'codex' }];
   if (repoSkillsDir) {
     roots.push({ path: repoSkillsDir, source: 'repo' });

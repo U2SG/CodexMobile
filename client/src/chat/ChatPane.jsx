@@ -172,7 +172,7 @@ function ChatPaneInner({ messages, selectedSession, running, onPreviewImage, onD
         <p>{agent.emptyBody}</p>
         {agent.id === 'unknown' ? null : (
           <div className="empty-suggestions">
-            {(agent.id === 'claude'
+            {(agent.id === 'claude' || agent.id === 'agy'
               ? ['审查当前改动', '继续上次开发', '生成实现计划']
               : ['解释当前项目', '修复报错', '生成图片']).map((item) => (
                 <button type="button" key={item} onClick={() => onUseSuggestion?.(item)}>

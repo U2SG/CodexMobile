@@ -7,7 +7,8 @@ import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { buildCodexLarkCliContext } from './lark-cli.js';
 import { detectFeishuSkillKeys } from './feishu-skills.js';
-import { isClaudeMode } from './agent-mode.js';
+import { isAgyMode, isClaudeMode } from './agent-mode.js';
+import { runAgyTurn } from './agy-runner.js';
 import { recordClaudeResolvedModel } from './claude-config.js';
 import { readCodexModels } from './codex-config.js';
 import { claudeAssistantMessageId, createClaudePartialStreamState, processClaudePartialStreamEvent } from './claude-stream.js';
@@ -1414,6 +1415,13 @@ async function runClaudeTurn({ sessionId, draftSessionId, projectPath, message, 
 }
 
 export async function runCodexTurn({ sessionId, draftSessionId, projectPath, message, model, reasoningEffort, permissionMode, selectedSkills, turnId: providedTurnId, ...rest }, emit) {
+  if (isAgyMode()) {
+    return runAgyTurn(
+      { sessionId, draftSessionId, projectPath, message, model, reasoningEffort, permissionMode, selectedSkills, turnId: providedTurnId },
+      emit,
+      { activeRuns, emitStatus }
+    );
+  }
   if (isClaudeMode()) {
     return runClaudeTurn({ sessionId, draftSessionId, projectPath, message, model, reasoningEffort, permissionMode, selectedSkills, turnId: providedTurnId }, emit);
   }

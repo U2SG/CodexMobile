@@ -18,7 +18,7 @@
 //   { handleRetryConnection, handleResetPairing, handleShowConnectionStatus }
 
 import { clearToken } from '../api.js';
-import { isClaudeProvider } from '../agent-meta.js';
+import { isAgyProvider, isClaudeProvider } from '../agent-meta.js';
 
 export const CONNECTION_STATUS = {
   connected: { label: '已连接', className: 'is-connected' },
@@ -32,7 +32,7 @@ export const CONNECTION_STATUS = {
 export function formatConnectionStatusMessage({ connectionState, desktopBridge, provider = '' }) {
   const connectionLabel =
     CONNECTION_STATUS[connectionState]?.label || connectionState;
-  if (isClaudeProvider(provider)) {
+  if (isClaudeProvider(provider) || isAgyProvider(provider)) {
     return `连接：${connectionLabel}`;
   }
   const desktopDetail =

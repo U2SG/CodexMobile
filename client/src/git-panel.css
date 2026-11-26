@@ -885,6 +885,11 @@
   color: #b06800;
 }
 
+.git-diff-related-agent.is-agy {
+  background: rgba(15, 118, 110, 0.16);
+  color: #0f766e;
+}
+
 /* Foreign-agent badge linking to a peer CodexMobile server. Renders as
    an anchor so the browser's default ctrl/cmd-click "open in new tab"
    works without extra plumbing. */

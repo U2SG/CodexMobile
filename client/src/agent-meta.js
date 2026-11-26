@@ -10,17 +10,27 @@ export function isClaudeProvider(statusOrProvider) {
   return normalizeAgentId(providerFromStatus(statusOrProvider)) === 'claude';
 }
 
+export function isAgyProvider(statusOrProvider) {
+  return normalizeAgentId(providerFromStatus(statusOrProvider)) === 'agy';
+}
+
 export function isCodexProvider(statusOrProvider) {
   return normalizeAgentId(providerFromStatus(statusOrProvider)) === 'codex';
 }
 
-// Three-state agent metadata.
+export function sessionSourceBadge(provider, fallbackLabel = 'Codex') {
+  if (isClaudeProvider(provider)) return { className: 'is-claude', label: 'Claude' };
+  if (isAgyProvider(provider)) return { className: 'is-agy', label: 'AGY' };
+  if (provider) return { className: 'is-codex', label: 'Codex' };
+  return { className: 'is-codex', label: fallbackLabel };
+}
+
+// Multi-state agent metadata.
 //
-// `id` is one of 'claude' | 'codex' | 'unknown'. The 'unknown' case fires
-// while /api/status hasn't returned yet and prevents route-conditional UI
-// (Drawer codex sections, claude-only branding, etc.) from briefly flashing
-// the wrong route's chrome. Route-specific renders should use strict
-// `agent.id === 'claude' / 'codex'`.
+// `id` is one of 'claude' | 'agy' | 'codex' | 'unknown'. The 'unknown' case
+// fires while /api/status hasn't returned yet and prevents route-conditional UI
+// from briefly flashing the wrong route's chrome. Route-specific renders should
+// use strict `agent.id === 'claude' / 'agy' / 'codex'`.
 export function agentMeta(statusOrProvider) {
   const agentId = normalizeAgentId(providerFromStatus(statusOrProvider));
   if (agentId === 'unknown') {
@@ -37,6 +47,22 @@ export function agentMeta(statusOrProvider) {
       newConversationHint: '正在连接',
       activityRunning: '正在连接',
       accentClass: ''
+    };
+  }
+  if (agentId === 'agy') {
+    return {
+      id: 'agy',
+      label: 'AGY',
+      shortLabel: 'AGY',
+      providerLabel: 'AGY CLI',
+      pairingTitle: '连接 AGY',
+      pairingHint: '输入 AGY 服务启动时设置的配对码。',
+      emptyTitle: 'AGY 工作台',
+      emptyBody: '选择项目后发起任务，AGY 会在电脑上的仓库里读取、修改和验证。',
+      placeholder: '交给 AGY 处理',
+      newConversationHint: '在当前项目交给 AGY',
+      activityRunning: 'AGY 正在处理',
+      accentClass: 'is-agy'
     };
   }
   const claude = agentId === 'claude';

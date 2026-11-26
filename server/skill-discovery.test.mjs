@@ -165,6 +165,12 @@ test('defaultSkillRoots in claude mode covers only ~/.claude/skills', () => {
   assert.equal(sources.includes('codex'), false, 'claude mode must not include ~/.codex/skills');
 });
 
+test('defaultSkillRoots in agy mode covers only ~/.gemini/config/skills', () => {
+  const roots = defaultSkillRoots({ agent: 'agy', repoSkillsDir: '/repo/skills' });
+  const sources = roots.map((r) => r.source);
+  assert.deepEqual(sources, ['agy']);
+});
+
 test('defaultSkillRoots in codex mode covers ~/.codex/skills + repo skills', () => {
   const roots = defaultSkillRoots({ agent: 'codex', repoSkillsDir: '/repo/skills' });
   const sources = roots.map((r) => r.source);

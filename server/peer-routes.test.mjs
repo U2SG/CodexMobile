@@ -73,12 +73,15 @@ test('parsePeerUrls skips empty entries / trims whitespace', () => {
 });
 
 test('parsePeerUrls accepts 3-segment Label|agent|URL with agent tag', () => {
-  const peers = parsePeerUrls('Claude|claude|https://a.example,Codex|codex|https://b.example');
-  assert.equal(peers.length, 2);
+  const peers = parsePeerUrls('Claude|claude|https://a.example,Codex|codex|https://b.example,AGY|agy|https://c.example');
+  assert.equal(peers.length, 3);
   assert.equal(peers[0].agent, 'claude');
   assert.equal(peers[0].label, 'Claude');
   assert.equal(peers[0].url, 'https://a.example');
   assert.equal(peers[1].agent, 'codex');
+  assert.equal(peers[2].agent, 'agy');
+  assert.equal(peers[2].label, 'AGY');
+  assert.equal(peers[2].url, 'https://c.example');
 });
 
 test('parsePeerUrls ignores unknown agent values (segment merges into label)', () => {

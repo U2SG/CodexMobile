@@ -213,7 +213,7 @@ export function GitDiffViewer({
               <>
                 {session.agent ? (
                   <span className={`git-diff-related-agent is-${session.agent}`}>
-                    {session.agent === 'claude' ? 'Claude' : 'Codex'}
+                    {session.agent === 'claude' ? 'Claude' : session.agent === 'agy' ? 'AGY' : 'Codex'}
                   </span>
                 ) : null}
                 <span className="git-diff-related-hash">{session.sessionId.slice(0, 8)}</span>

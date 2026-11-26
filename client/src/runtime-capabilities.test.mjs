@@ -60,6 +60,22 @@ test('runtimeCapabilities keeps Claude CLI separate from Codex-only features', (
   assert.equal(capabilities.canUseDocs, false);
 });
 
+test('runtimeCapabilities supports AGY CLI without Codex desktop IPC', () => {
+  const capabilities = runtimeCapabilities({
+    agentId: 'agy',
+    desktopBridge: null,
+    sessionId: 'agy-session-1',
+    running: true
+  });
+
+  assert.equal(capabilities.runtime, 'agy-cli');
+  assert.equal(capabilities.canStart, true);
+  assert.equal(capabilities.canSteer, false);
+  assert.equal(capabilities.canCompact, false);
+  assert.equal(capabilities.canGenerateImage, false);
+  assert.equal(capabilities.canUseDocs, false);
+});
+
 test('canGuideCurrentTask and desktopBridgeCanCreateThread preserve send-state behavior', () => {
   assert.equal(canGuideCurrentTask({
     agentId: 'codex',

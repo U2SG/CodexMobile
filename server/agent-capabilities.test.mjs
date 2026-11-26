@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   agentCapabilities,
   currentAgentMatchesSession,
+  isAgyProvider,
   isClaudeProvider,
   isCodexProvider,
   normalizeAgentProvider,
@@ -12,15 +13,19 @@ import {
 
 test('normalizes provider names into route identities', () => {
   assert.equal(normalizeAgentProvider('claude-code'), 'claude');
+  assert.equal(normalizeAgentProvider('antigravity'), 'agy');
   assert.equal(normalizeAgentProvider('cliproxyapi'), 'codex');
   assert.equal(isClaudeProvider('claude'), true);
+  assert.equal(isAgyProvider('agy'), true);
   assert.equal(isCodexProvider('openai'), true);
 });
 
 test('sessionAgentId prefers source markers over provider fallback', () => {
   assert.equal(sessionAgentId({ source: 'claude-code-mobile', provider: 'codex' }), 'claude');
+  assert.equal(sessionAgentId({ source: 'agy', provider: 'codex' }), 'agy');
   assert.equal(sessionAgentId({ source: 'codex-app', provider: 'claude' }), 'codex');
   assert.equal(sessionAgentId({ provider: 'claude' }), 'claude');
+  assert.equal(sessionAgentId({ provider: 'agy' }), 'agy');
   assert.equal(sessionAgentId({}), 'unknown');
 });
 
@@ -45,5 +50,12 @@ test('agentCapabilities separates common, Codex-only, and Claude-only abilities'
   assert.equal(claude.canGenerateImage, false);
   assert.equal(claude.canCompact, true);
   assert.equal(claude.canUseDocs, false);
+
+  const agy = agentCapabilities('agy');
+  assert.equal(agy.runtimeFamily, 'agy-cli');
+  assert.equal(agy.canStart, true);
+  assert.equal(agy.canGenerateImage, false);
+  assert.equal(agy.canCompact, false);
+  assert.equal(agy.canUseDocs, false);
 }
 );

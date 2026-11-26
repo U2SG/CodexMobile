@@ -13,7 +13,7 @@
 
 import { sendJson } from './http-utils.js';
 
-const KNOWN_AGENTS = new Set(['codex', 'claude']);
+const KNOWN_AGENTS = new Set(['codex', 'claude', 'agy']);
 
 export function parsePeerUrls(raw) {
   if (typeof raw !== 'string' || !raw.trim()) return [];
