@@ -843,3 +843,27 @@ test('getStats returns null before first build, populated after', async () => {
   assert.equal(stats.uniquePaths, 1);
   assert.ok(typeof stats.builtAt === 'number');
 });
+
+test('build bounds concurrent rollout reads so large cold scans do not exhaust memory', async () => {
+  let inflight = 0;
+  let peakInflight = 0;
+  const files = Array.from({ length: 8 }, (_, idx) => ({ path: `/codex/s${idx}.jsonl`, mtimeMs: idx + 1 }));
+  const index = createFileSessionIndex({
+    listRolloutFiles: async () => files,
+    readRolloutFile: async (filePath) => {
+      inflight += 1;
+      peakInflight = Math.max(peakInflight, inflight);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      inflight -= 1;
+      const id = path.basename(filePath, '.jsonl');
+      return rolloutJsonl([
+        metaLine({ id, cwd: '/r' }),
+        applyPatchLine({ timestamp: '2026-05-16T00:00:00Z', patch: `*** Add File: ${id}.js` })
+      ]);
+    }
+  });
+  const hits = await index.getSessionsForFile('/r/s3.js');
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].sessionId, 's3');
+  assert.ok(peakInflight <= 2, `expected peak concurrency <= 2, got ${peakInflight}`);
+});
